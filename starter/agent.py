@@ -133,7 +133,7 @@ class Agent:
         if m:
             phrases = [p.strip() for p in m.group(1).split(";") if p.strip()]
             if OVERRIDE_RE.search(msg):
-                st["phrases"] = phrases + st["phrases"]   # reprioritise
+                st["phrases"] = phrases + st["phrases"]
             else:
                 st["phrases"].extend(phrases)
             return

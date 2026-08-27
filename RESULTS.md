@@ -150,3 +150,25 @@ from constraint, plus intent markers (`ignore`, `actually`, `no strong feelings`
 rather than exact strings. It is invariant to the rewrite, at a cost of 0.003 on
 the official templates — a trade we accept, since the 200 public sessions are the
 set we tuned against and the 800 private sessions are the ones that count.
+
+## Override handling (three strategies tested)
+
+`intent_override` sessions replace a previously disclosed constraint mid-session.
+We tested whether removing the superseded phrase helps.
+
+| Strategy                        | Score   |
+|---------------------------------|---------|
+| Keep all, prepend new (current) | 0.80382 |
+| Drop most recent phrase         | 0.79858 |
+| Drop least-similar phrase       | 0.80196 |
+
+Both removal strategies underperform. The evaluator does not reveal which
+constraint was superseded, so any removal heuristic sometimes discards a phrase
+that is still true of the target — and the cost of losing a valid constraint
+exceeds the cost of retaining a stale one, since BM25 scores conjunctive matches
+higher. Prepending the new value is sufficient: it dominates the query without
+requiring us to guess what to delete.
+
+The residual MTTC gap on these sessions (4.43 vs ~2.7 elsewhere) is largely
+structural — the evaluator ignores hits before the override turn fires, so no
+agent can converge earlier than turn 3 or 4 on them.
