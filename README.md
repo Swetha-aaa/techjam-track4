@@ -162,16 +162,6 @@ information to identify one product. See the constraint entropy analysis in
 
 ---
 
-## Team contributions
-
-| Name | Contribution |
-|------|--------------|
-| Swetha Sudhakar | Evaluation-protocol analysis, retrieval pipeline, ablation infrastructure, entropy and drift studies |
-| _TBC_ | |
-| _TBC_ | |
-| _TBC_ | |
-
----
 
 Organizer documentation for the challenge is preserved in `KIT_README.md` and
 `docs/`.
