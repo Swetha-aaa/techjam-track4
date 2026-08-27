@@ -6,3 +6,5 @@ __pycache__/
 models/
 eval/logs/
 .venv/
+data/embeddings.npy
+data/embedding_ids.json
