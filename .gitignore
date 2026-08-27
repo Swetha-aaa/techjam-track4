@@ -1,0 +1,8 @@
+data/*.jsonl
+results.json
+__pycache__/
+*.pyc
+.env
+models/
+eval/logs/
+.venv/
