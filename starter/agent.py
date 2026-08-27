@@ -6,6 +6,7 @@ TOKEN_RE = re.compile(r"[a-z0-9]+", re.I)
 STOP = set("a an and are as at be but by for from i in is it me my of on or please "
            "some that the this to want with would you looking still exploring key "
            "requirement actually ignore earlier preference what need".split())
+COMMON_THRESHOLD = 1.0
 
 
 def _text(v):
@@ -47,19 +48,50 @@ class Agent:
         if batch:
             cur.executemany("INSERT INTO products VALUES (?,?,?,?,?,?,?)", batch)
         self.conn.commit()
+        # document frequency per token, for IDF weighting
+        self.df = {}
+        self.total_docs = 0
+        for line in Path(catalog_path).open(encoding="utf-8"):
+            p = json.loads(line)
+            self.total_docs += 1
+            blob = " ".join(_text(p.get(f)) for f in
+                            ("title", "categories", "features", "details",
+                             "store", "description"))
+            for t in set(terms(blob)):
+                self.df[t] = self.df.get(t, 0) + 1
         self.s = {}
 
     def reset(self, session_id, user_profile):
         self.s[session_id] = {"msgs": [], "phrases": [], "asked": []}
 
+    def _phrase_rarity(self, phrase):
+        
+        toks = terms(phrase)
+        if not toks:
+            return self.total_docs
+        return min(self.df.get(t, 1) for t in toks)
+
     def _search(self, phrases, msgs, k):
+        threshold = self.total_docs * COMMON_THRESHOLD
+        ranked = sorted(phrases, key=self._phrase_rarity)
+
         clauses = []
-        for ph in phrases:
+        for ph in ranked:
+            if self._phrase_rarity(ph) > threshold:
+                continue                       # too common to discriminate
             toks = terms(ph)[:12]
             if toks:
                 clauses.append("(" + " AND ".join(f'"{t}"' for t in toks) + ")")
+
+        if not clauses:                        # all phrases were common — use them anyway
+            for ph in ranked:
+                toks = terms(ph)[:12]
+                if toks:
+                    clauses.append("(" + " AND ".join(f'"{t}"' for t in toks) + ")")
+
+    
         rows = []
-        rank = "bm25(products,0.0,6.0,4.0,2.5,2.5,1.5,1.0)"
+        rank = "bm25(products,0.0,0.1,0.5,15.0,15.0,0.1,0.5)"
         if clauses:
             expr = " OR ".join(clauses)
             rows = self.conn.execute(
