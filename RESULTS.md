@@ -74,3 +74,26 @@ internally; filtering on top discards conjunctive signal the ranker was using
 correctly. Disabled via `common_threshold = 1.0`. The document-frequency index
 is retained for constraint-entropy analysis. Measured before the category
 filter was added.
+
+## Constraint entropy analysis
+
+Each session's simulated customer is built from four phrases lifted verbatim from
+the target product's own `features` and `details`. How *rare* those phrases are in
+the catalog determines whether the session is solvable at all.
+
+| Rarest constraint matches | n  | HR@10 | Rank-1 rate |
+|---------------------------|----|-------|-------------|
+| < 50 products             | 59 | 1.000 | 0.797       |
+| 50 - 500                  | 40 | 0.975 | 0.700       |
+| 500 - 5,000               | 92 | 0.870 | 0.304       |
+| > 5,000                   |  9 | 0.556 | 0.222       |
+
+Recall is perfect when any constraint is distinctive: 59/59 on sessions whose
+rarest phrase matches under 50 products. 16 of our 17 misses fall in the two
+common buckets, where every disclosed phrase (`Imported`, `100% Cotton`,
+`Pull-On closure`) matches thousands of products.
+
+The gap between HR and rank-1 rate in the 500-5k bucket (0.870 vs 0.304) is not
+a retrieval failure — the target reaches the top 10, but lexical scoring cannot
+separate it from equally-matching distractors. That is the specific deficit a
+semantic reranker addresses, and it defines our remaining headroom.
