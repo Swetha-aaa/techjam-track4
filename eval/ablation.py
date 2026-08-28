@@ -221,8 +221,45 @@ constraints per turn and ignores hits before the override turn fires on
 intent_override sessions, that gap is largely structural.
 """
 
+PARAPHRASE_NOTE = """
+## Paraphrase sensitivity
+
+The official simulator lifts constraint strings verbatim from the target
+product's `features` and `details`, so the customer says things like
+`Material:alloy` and `Stretchy fabric: 95% modal, 5% spandex`. A real shopper
+would not. We built a separate harness (`eval/paraphrase.py`) that rewrites each
+disclosed constraint into natural phrasing before it reaches the agent — a
+hand-written dictionary of common constraints plus seven structural rules,
+covering 76.4% of the 800 constraint instances. The remainder are long marketing
+sentences that are already natural prose and were left unchanged. The official
+evaluator is not modified; these figures are reported separately.
+
+| Condition   | Retrieval | HR@10 | MRR   | MTTC | Score   |
+|-------------|-----------|-------|-------|------|---------|
+| Verbatim    | exact     | 0.915 | 0.624 | 3.05 | 0.80382 |
+| Verbatim    | semantic  | 0.920 | 0.555 | 3.02 | 0.78609 |
+| Paraphrased | exact     | 0.715 | 0.497 | 4.75 | 0.63156 |
+| Paraphrased | semantic  | 0.720 | 0.475 | 4.72 | 0.62801 |
+
+Two findings.
+
+**Our score depends substantially on verbatim disclosure.** Exact-match retrieval
+falls from 0.804 to 0.632 when the customer paraphrases — a 21% relative drop.
+This quantifies how much of our result rests on the simulator's design rather
+than on general retrieval capability.
+
+**Semantic reranking does not recover the loss.** We expected the embedding layer
+to earn its place once the lexical signal degraded. It did not: 0.628 versus
+exact match's 0.632, marginally better on recall and worse on rank quality — the
+same pattern as the verbatim condition. The limitation is not that queries are
+unnaturally phrased but that the *documents* are. Product records are marketing
+copy and specification fields, which embed poorly regardless of how the query is
+worded. Closing this gap would require purpose-built product representations
+rather than embedding raw catalog text, which we did not attempt.
+"""
+
 NOTE_BLOCKS = (PROGRESSION, COMPONENT_NOTES, SWEEP_NOTE, IDF_NOTE,
-               ENTROPY_NOTE, RERANK_NOTE, DRIFT_NOTE, OVERRIDE_NOTE, ORACLE_NOTE)
+               ENTROPY_NOTE, RERANK_NOTE, DRIFT_NOTE, OVERRIDE_NOTE, ORACLE_NOTE, PARAPHRASE_NOTE)
 # -----------------------------------------------------------------------------
 
 
