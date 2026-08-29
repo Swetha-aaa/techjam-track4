@@ -14,6 +14,7 @@ SCENARIOS = ["buying", "browsing", "intent_override", "boundary"]
 CONFIGS = {
     "Ours (full)":            {},
     "- category filter":      {"use_category_filter": False},
+    "- clause duplication":   {"clause_duplication": 0},
     "- phrase adjacency":     {"phrase_adjacency": False},
     "- field reweighting":    {"rank": "bm25(products,0.0,6.0,4.0,2.5,2.5,1.5,1.0)"},
     "- robust extraction":    {"robust_extraction": False},
@@ -27,7 +28,7 @@ CONFIGS = {
 COMPONENT_NOTES = """
 ## Component notes
 
-**Category hard-filter (+0.118).** Turn 1 always names the product category
+**Category hard-filter.** Turn 1 always names the product category
 (`Women Bodysuits`, `Accessories Belts`). ANDing it against the `categories`
 column before phrase scoring narrows the pool from 50,000 to a few hundred, so
 rare-phrase signal no longer competes with matches from unrelated categories.
@@ -35,22 +36,33 @@ The single largest component in the system.
 
 **Phrase-adjacency clauses (+0.020).** Each constraint is compiled twice — once
 as a token conjunction and once as a contiguous phrase match. A product where the
-tokens appear adjacently satisfies both clauses and is scored above one where
-they are merely scattered across the record. Details below.
+tokens appear adjacently satisfies both clauses and outranks one where they are
+merely scattered across the record. Details below.
+
+**Clause duplication (+0.013).** Every clause is emitted twice, which halves the
+category clause's relative weight in the BM25 score since its terms appear only
+once. The category filter has already gated the pool, so this shifts ranking
+influence from "sits in the right category" to "matches the stated constraints."
+Details below.
 
 **Field reweighting (+0.025).** Constraints are drawn from `features` and
 `details`, so those columns carry the evidence. Full sweep below.
 
-**Structure-based extraction (-0.003).** Costs a fraction on the public set and
+**Structure-based extraction (-0.004).** Costs a fraction on the public set and
 buys invariance to a rewording of the simulator's message templates. Details in
 the drift-robustness section below.
 
 **IDF filtering (rejected).** Hurts at every threshold that does anything.
-Notably it costs less once the category filter is active (0.783 vs 0.621
-without), since the pool is already narrow. Still net negative. Details below.
+Notably it costs less once the category filter is active, since the pool is
+already narrow. Still net negative. Details below.
 
 **Semantic reranking (rejected).** MiniLM embeddings over the candidate pool
 never beat lexical ordering at any blend weight. Details below.
+
+The pattern across all seven: mechanisms that sharpen the discriminative signal
+(adjacency, duplication, field weighting) help. Mechanisms that filter, discard
+or dilute evidence (IDF filtering, semantic reranking, override phrase-removal)
+consistently do not.
 """
 
 PROGRESSION = """
@@ -64,6 +76,7 @@ PROGRESSION = """
 | + category hard-filter               | 0.915 | 0.634 | 3.04 | 0.80695 |
 | + structure-based extraction         | 0.915 | 0.624 | 3.05 | 0.80382 |
 | + phrase-adjacency clauses           | 0.935 | 0.644 | 2.85 | 0.82394 |
+| + clause duplication                 | 0.950 | 0.654 | 2.70 | 0.83719 |
 """
 
 ADJACENCY_NOTE = """
@@ -79,13 +92,77 @@ We now emit both clause forms per constraint — the token conjunction and an FT
 contiguous phrase match. A product where the tokens appear adjacently satisfies
 two clauses rather than one, and BM25 ranks it accordingly.
 
-Worth +0.020, the second-largest component after the category filter, and it
-improves all three metrics simultaneously (HR 0.915 → 0.935, MRR 0.624 → 0.644,
-MTTC 3.05 → 2.85). Browsing reaches 0.975 HR@10 and boundary reaches 1.000.
+Worth +0.020, improving all three metrics simultaneously (HR 0.915 → 0.935,
+MRR 0.624 → 0.644, MTTC 3.05 → 2.85). Browsing reached 0.975 HR@10 and boundary
+reached 1.000.
+"""
 
-This fits the pattern of every other result here: mechanisms that *add*
-information help, while mechanisms that filter, discard or dilute it (IDF
-filtering, semantic reranking, override phrase-removal) consistently do not.
+DUPLICATION_NOTE = """
+## Clause duplication
+
+Each constraint's clauses are emitted twice into the OR expression. Worth +0.013,
+and the mechanism took three attempts to identify correctly.
+
+| N   | HR@10 | MRR   | MTTC | Score   |
+|-----|-------|-------|------|---------|
+| 0   | 0.935 | 0.644 | 2.85 | 0.82394 |
+| 1   | 0.940 | 0.633 | 2.83 | 0.82352 |
+| 2   | 0.940 | 0.640 | 2.81 | 0.82599 |
+| 3   | 0.945 | 0.646 | 2.76 | 0.83102 |
+| 4   | 0.950 | 0.653 | 2.73 | 0.83649 |
+| 6   | 0.950 | 0.654 | 2.70 | 0.83719 |
+| 10  | 0.950 | 0.654 | 2.70 | 0.83719 |
+
+**It is not rarity weighting.** Clauses are ordered by rarity and the first N are
+duplicated, so we assumed the gain came from boosting the most distinctive
+constraints. But `eval/phrase_counts.py` shows no retrieval call holds more than
+six phrases before turn 6, while `eval/dup_diff.py` shows sessions changing at
+turns 1-3. At those turns every clause is duplicated, so rarity ordering cannot
+be the operative variable — consistent with N=6 and N=10 scoring identically.
+
+**It is not uniform amplification either.** FTS5's BM25 sums per-clause
+contributions, so doubling every clause of a homogeneous query scales all scores
+equally and leaves the ranking untouched. We verified this directly
+(`eval/dup_probe.py`, Part 1): four query shapes — all single-token, all
+multi-token, and two mixed — return byte-identical top-10 lists under duplication.
+
+**The asymmetry is the category clause.** The full query is
+`(categories:"x" AND categories:"y") AND (A OR A OR B OR B ...)`. The category
+terms appear once; the content clauses appear twice. Duplication therefore halves
+the category's relative contribution to the BM25 score. Part 2 of the probe
+confirms it: three of four category-anchored queries reorder under duplication,
+while every category-free query does not.
+
+This is a sensible thing to want. The category filter has already served its
+purpose as a hard gate — every surviving candidate is in the right category, so
+letting category terms also drive the *ranking* wastes scoring weight on a
+dimension that no longer discriminates. Duplication demotes it toward being a
+pure filter and lets constraint evidence dominate the ordering.
+
+Retained at 6. Any value ≥4 produces the same effect, since the parameter's real
+function is to duplicate everything rather than to select a subset.
+"""
+
+TOKENCAP_NOTE = """
+## Phrase token cap sweep
+
+Each constraint is truncated to at most N tokens before compilation into a
+conjunctive clause.
+
+| Cap | Score   |
+|-----|---------|
+| 8   | 0.82319 |
+| 12  | 0.82394 |
+| 16  | 0.82394 |
+| 20  | 0.82394 |
+| 30  | 0.81894 |
+
+Flat across 12–20, falling off on both sides. Below 12 the truncation discards
+discriminative detail from longer constraints. Above 20 the opposite problem
+appears: a 25-token marketing sentence compiled as a conjunction requires every
+token to be present, which over-constrains the query and eliminates the target.
+Retained at 12 — identical score to 16 and 20, with marginally cheaper queries.
+Measured at the 0.82394 configuration.
 """
 
 SWEEP_NOTE = """
@@ -121,8 +198,8 @@ Every threshold that removed phrases lowered the score, monotonically. BM25's
 ranking function already contains an IDF term, so token rarity is handled
 internally; filtering on top discards conjunctive signal the ranker was using
 correctly. Disabled via `common_threshold = 1.0`. The document-frequency index
-is retained for constraint-entropy analysis. Measured before the category
-filter was added.
+is retained for constraint-entropy analysis and for ordering clauses by rarity.
+Measured before the category filter was added.
 """
 
 ENTROPY_NOTE = """
@@ -151,7 +228,7 @@ reranker would close this gap; it did not (see below). The deficit appears to be
 information-theoretic rather than algorithmic: when every disclosed phrase
 matches thousands of products, nothing in the transcript identifies the target.
 
-Measured at 0.80382, before phrase-adjacency clauses were added.
+Measured at the 0.80382 configuration.
 """
 
 RERANK_NOTE = """
@@ -192,9 +269,11 @@ modified; drift figures come from this separate harness and are reported as such
 
 Structure-based extraction keys on the colon delimiter that separates lead-in
 from constraint, plus intent markers (`ignore`, `actually`, `no strong feelings`)
-rather than exact strings. It is invariant to the rewrite, at a cost of 0.003 on
-the official templates — a trade we accept, since the 200 public sessions are the
-set we tuned against and the 800 private sessions are the ones that count.
+rather than exact strings. It is invariant to the rewrite, at a small cost on the
+official templates — a trade we accept, since the 200 public sessions are the set
+we tuned against and the 800 private sessions are the ones that count.
+
+Measured at the 0.80382 configuration.
 """
 
 OVERRIDE_NOTE = """
@@ -220,6 +299,8 @@ requiring us to guess what to delete.
 The residual MTTC gap on these sessions is largely structural — the evaluator
 ignores hits before the override turn fires, so no agent can converge earlier
 than turn 3 or 4 on them.
+
+Measured at the 0.80382 configuration.
 """
 
 ORACLE_NOTE = """
@@ -249,8 +330,8 @@ cost of *eliciting* constraints across turns rather than being handed them. Sinc
 the evaluator discloses at most two constraints per turn and ignores hits before
 the override turn fires, that gap is largely structural.
 
-Measured at 0.80382, before phrase-adjacency clauses were added; both figures
-move together since the oracle shares the retrieval pipeline.
+Measured at the 0.80382 configuration; both figures move together, since the
+oracle shares the retrieval pipeline.
 """
 
 PARAPHRASE_NOTE = """
@@ -289,12 +370,13 @@ copy and specification fields, which embed poorly regardless of how the query is
 worded. Closing this gap would require purpose-built product representations
 rather than embedding raw catalog text, which we did not attempt.
 
-Measured at 0.80382, before phrase-adjacency clauses were added.
+Measured at the 0.80382 configuration.
 """
 
-NOTE_BLOCKS = (PROGRESSION, COMPONENT_NOTES, ADJACENCY_NOTE, SWEEP_NOTE,
-               IDF_NOTE, ENTROPY_NOTE, RERANK_NOTE, DRIFT_NOTE, OVERRIDE_NOTE,
-               ORACLE_NOTE, PARAPHRASE_NOTE)
+NOTE_BLOCKS = (PROGRESSION, COMPONENT_NOTES,
+               ADJACENCY_NOTE, DUPLICATION_NOTE, TOKENCAP_NOTE, SWEEP_NOTE,
+               IDF_NOTE, RERANK_NOTE, OVERRIDE_NOTE,
+               ENTROPY_NOTE, ORACLE_NOTE, DRIFT_NOTE, PARAPHRASE_NOTE)
 # -----------------------------------------------------------------------------
 
 

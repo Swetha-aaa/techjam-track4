@@ -35,6 +35,12 @@ DEFAULT_CONFIG = {
     "rank": "bm25(products,0.0,0.1,0.5,15.0,15.0,0.1,0.5)",
     # max tokens kept per constraint phrase
     "max_phrase_tokens": 12,
+    # Duplicate each constraint's clauses in the OR expression. BM25 sums
+    # per-clause contributions, so duplication amplifies documents matching
+    # several constraints over ones matching a single constraint strongly.
+    # Applies to the first N phrases by rarity; no session holds more than 6,
+    # so 6 duplicates every clause. 0 = off.
+    "clause_duplication": 6,
     # structure-based extraction; False falls back to fixed-template regexes
     "phrase_adjacency": True,
     "robust_extraction": True,
@@ -180,15 +186,19 @@ class Agent:
         ranked = sorted(phrases, key=self._phrase_rarity)
 
         clauses = []
-        for ph in ranked:
+        for i, ph in enumerate(ranked):
             if self._phrase_rarity(ph) > threshold:
                 continue
             toks = terms(ph)[:cap]
             if not toks:
                 continue
-            clauses.append("(" + " AND ".join(f'"{t}"' for t in toks) + ")")
-            if cfg["phrase_adjacency"] and len(toks) > 1:
-                clauses.append('"' + " ".join(toks) + '"')   # contiguous match
+            conj = "(" + " AND ".join(f'"{t}"' for t in toks) + ")"
+            adj = ('"' + " ".join(toks) + '"') if len(toks) > 1 else None
+            reps = 2 if i < cfg["clause_duplication"] else 1
+            for _ in range(reps):
+                clauses.append(conj)
+                if cfg["phrase_adjacency"] and adj:
+                    clauses.append(adj)
 
         if not clauses:                      # everything filtered — use all phrases
             for ph in ranked:

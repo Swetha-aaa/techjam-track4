@@ -3,22 +3,23 @@
 | Config                    | HR@10 | MRR   | MTTC | Score   |
 |---------------------------|-------|-------|------|---------|
 | BM25 baseline (organizer) | 0.125 | 0.068 | 9.81 | 0.10671 |
-| Ours (full)               | 0.935 | 0.644 | 2.85 | 0.82394 |
+| Ours (full)               | 0.950 | 0.654 | 2.69 | 0.83718 |
 | - category filter         | 0.775 | 0.611 | 4.42 | 0.70240 |
-| - phrase adjacency        | 0.915 | 0.624 | 3.05 | 0.80382 |
-| - field reweighting       | 0.910 | 0.617 | 3.06 | 0.79879 |
-| - robust extraction       | 0.935 | 0.656 | 2.84 | 0.82763 |
-| + IDF filtering           | 0.900 | 0.618 | 3.13 | 0.79277 |
-| + rerank (weight 2.0)     | 0.940 | 0.557 | 2.81 | 0.80076 |
-| + rerank (weight 10.0)    | 0.935 | 0.636 | 2.85 | 0.82132 |
+| - clause duplication      | 0.935 | 0.644 | 2.85 | 0.82394 |
+| - phrase adjacency        | 0.945 | 0.646 | 2.77 | 0.83080 |
+| - field reweighting       | 0.945 | 0.621 | 2.77 | 0.82349 |
+| - robust extraction       | 0.950 | 0.662 | 2.69 | 0.83995 |
+| + IDF filtering           | 0.905 | 0.621 | 3.08 | 0.79712 |
+| + rerank (weight 2.0)     | 0.955 | 0.556 | 2.65 | 0.81128 |
+| + rerank (weight 10.0)    | 0.950 | 0.642 | 2.69 | 0.83381 |
 
 ## Per-scenario (full system)
 
 | Scenario        | n  | HR@10 | MRR   | MTTC |
 |-----------------|----|-------|-------|------|
-| buying          | 80 | 0.900 | 0.590 | 2.71 |
-| browsing        | 80 | 0.975 | 0.648 | 2.34 |
-| intent_override | 30 | 0.900 | 0.735 | 4.40 |
+| buying          | 80 | 0.925 | 0.574 | 2.44 |
+| browsing        | 80 | 0.988 | 0.677 | 2.24 |
+| intent_override | 30 | 0.900 | 0.763 | 4.40 |
 | boundary        | 10 | 1.000 | 0.779 | 3.30 |
 
 ## Progression
@@ -31,10 +32,11 @@
 | + category hard-filter               | 0.915 | 0.634 | 3.04 | 0.80695 |
 | + structure-based extraction         | 0.915 | 0.624 | 3.05 | 0.80382 |
 | + phrase-adjacency clauses           | 0.935 | 0.644 | 2.85 | 0.82394 |
+| + clause duplication                 | 0.950 | 0.654 | 2.70 | 0.83719 |
 
 ## Component notes
 
-**Category hard-filter (+0.118).** Turn 1 always names the product category
+**Category hard-filter.** Turn 1 always names the product category
 (`Women Bodysuits`, `Accessories Belts`). ANDing it against the `categories`
 column before phrase scoring narrows the pool from 50,000 to a few hundred, so
 rare-phrase signal no longer competes with matches from unrelated categories.
@@ -42,22 +44,33 @@ The single largest component in the system.
 
 **Phrase-adjacency clauses (+0.020).** Each constraint is compiled twice — once
 as a token conjunction and once as a contiguous phrase match. A product where the
-tokens appear adjacently satisfies both clauses and is scored above one where
-they are merely scattered across the record. Details below.
+tokens appear adjacently satisfies both clauses and outranks one where they are
+merely scattered across the record. Details below.
+
+**Clause duplication (+0.013).** Every clause is emitted twice, which halves the
+category clause's relative weight in the BM25 score since its terms appear only
+once. The category filter has already gated the pool, so this shifts ranking
+influence from "sits in the right category" to "matches the stated constraints."
+Details below.
 
 **Field reweighting (+0.025).** Constraints are drawn from `features` and
 `details`, so those columns carry the evidence. Full sweep below.
 
-**Structure-based extraction (-0.003).** Costs a fraction on the public set and
+**Structure-based extraction (-0.004).** Costs a fraction on the public set and
 buys invariance to a rewording of the simulator's message templates. Details in
 the drift-robustness section below.
 
 **IDF filtering (rejected).** Hurts at every threshold that does anything.
-Notably it costs less once the category filter is active (0.783 vs 0.621
-without), since the pool is already narrow. Still net negative. Details below.
+Notably it costs less once the category filter is active, since the pool is
+already narrow. Still net negative. Details below.
 
 **Semantic reranking (rejected).** MiniLM embeddings over the candidate pool
 never beat lexical ordering at any blend weight. Details below.
+
+The pattern across all seven: mechanisms that sharpen the discriminative signal
+(adjacency, duplication, field weighting) help. Mechanisms that filter, discard
+or dilute evidence (IDF filtering, semantic reranking, override phrase-removal)
+consistently do not.
 
 ## Phrase-adjacency clauses
 
@@ -71,13 +84,73 @@ We now emit both clause forms per constraint — the token conjunction and an FT
 contiguous phrase match. A product where the tokens appear adjacently satisfies
 two clauses rather than one, and BM25 ranks it accordingly.
 
-Worth +0.020, the second-largest component after the category filter, and it
-improves all three metrics simultaneously (HR 0.915 → 0.935, MRR 0.624 → 0.644,
-MTTC 3.05 → 2.85). Browsing reaches 0.975 HR@10 and boundary reaches 1.000.
+Worth +0.020, improving all three metrics simultaneously (HR 0.915 → 0.935,
+MRR 0.624 → 0.644, MTTC 3.05 → 2.85). Browsing reached 0.975 HR@10 and boundary
+reached 1.000.
 
-This fits the pattern of every other result here: mechanisms that *add*
-information help, while mechanisms that filter, discard or dilute it (IDF
-filtering, semantic reranking, override phrase-removal) consistently do not.
+## Clause duplication
+
+Each constraint's clauses are emitted twice into the OR expression. Worth +0.013,
+and the mechanism took three attempts to identify correctly.
+
+| N   | HR@10 | MRR   | MTTC | Score   |
+|-----|-------|-------|------|---------|
+| 0   | 0.935 | 0.644 | 2.85 | 0.82394 |
+| 1   | 0.940 | 0.633 | 2.83 | 0.82352 |
+| 2   | 0.940 | 0.640 | 2.81 | 0.82599 |
+| 3   | 0.945 | 0.646 | 2.76 | 0.83102 |
+| 4   | 0.950 | 0.653 | 2.73 | 0.83649 |
+| 6   | 0.950 | 0.654 | 2.70 | 0.83719 |
+| 10  | 0.950 | 0.654 | 2.70 | 0.83719 |
+
+**It is not rarity weighting.** Clauses are ordered by rarity and the first N are
+duplicated, so we assumed the gain came from boosting the most distinctive
+constraints. But `eval/phrase_counts.py` shows no retrieval call holds more than
+six phrases before turn 6, while `eval/dup_diff.py` shows sessions changing at
+turns 1-3. At those turns every clause is duplicated, so rarity ordering cannot
+be the operative variable — consistent with N=6 and N=10 scoring identically.
+
+**It is not uniform amplification either.** FTS5's BM25 sums per-clause
+contributions, so doubling every clause of a homogeneous query scales all scores
+equally and leaves the ranking untouched. We verified this directly
+(`eval/dup_probe.py`, Part 1): four query shapes — all single-token, all
+multi-token, and two mixed — return byte-identical top-10 lists under duplication.
+
+**The asymmetry is the category clause.** The full query is
+`(categories:"x" AND categories:"y") AND (A OR A OR B OR B ...)`. The category
+terms appear once; the content clauses appear twice. Duplication therefore halves
+the category's relative contribution to the BM25 score. Part 2 of the probe
+confirms it: three of four category-anchored queries reorder under duplication,
+while every category-free query does not.
+
+This is a sensible thing to want. The category filter has already served its
+purpose as a hard gate — every surviving candidate is in the right category, so
+letting category terms also drive the *ranking* wastes scoring weight on a
+dimension that no longer discriminates. Duplication demotes it toward being a
+pure filter and lets constraint evidence dominate the ordering.
+
+Retained at 6. Any value ≥4 produces the same effect, since the parameter's real
+function is to duplicate everything rather than to select a subset.
+
+## Phrase token cap sweep
+
+Each constraint is truncated to at most N tokens before compilation into a
+conjunctive clause.
+
+| Cap | Score   |
+|-----|---------|
+| 8   | 0.82319 |
+| 12  | 0.82394 |
+| 16  | 0.82394 |
+| 20  | 0.82394 |
+| 30  | 0.81894 |
+
+Flat across 12–20, falling off on both sides. Below 12 the truncation discards
+discriminative detail from longer constraints. Above 20 the opposite problem
+appears: a 25-token marketing sentence compiled as a conjunction requires every
+token to be present, which over-constrains the query and eliminates the target.
+Retained at 12 — identical score to 16 and 20, with marginally cheaper queries.
+Measured at the 0.82394 configuration.
 
 ## BM25 field weight sweep
 
@@ -109,8 +182,53 @@ Every threshold that removed phrases lowered the score, monotonically. BM25's
 ranking function already contains an IDF term, so token rarity is handled
 internally; filtering on top discards conjunctive signal the ranker was using
 correctly. Disabled via `common_threshold = 1.0`. The document-frequency index
-is retained for constraint-entropy analysis. Measured before the category
-filter was added.
+is retained for constraint-entropy analysis and for ordering clauses by rarity.
+Measured before the category filter was added.
+
+## Semantic reranking (tested, rejected)
+
+MiniLM-L6-v2 embeddings pre-computed over all 50,000 products, used to reorder
+the FTS candidate pool. `fts_weight` controls how much of the original lexical
+ordering is preserved — low values mean near-pure semantic ordering.
+
+Score rises monotonically as semantic influence is reduced (0.602 at weight 0.1,
+0.790 at 2.0, 0.797 at 5.0, 0.805 at 10.0), converging on the no-rerank baseline
+without ever exceeding it. Shrinking the candidate pool to 15 did not help
+either (0.801).
+
+The reason is structural: the simulated customer quotes the target product's own
+`features` and `details` verbatim, so an exact lexical match is near-certain
+evidence of identity. Embedding similarity dilutes that into topical proximity —
+it cannot distinguish the product a phrase was copied from and a product that
+merely sounds similar.
+
+Component disabled. The submitted agent has no model dependency and runs on the
+Python standard library alone.
+
+## Override handling (three strategies tested)
+
+`intent_override` sessions replace a previously disclosed constraint mid-session.
+The organizers' own guidance describes a strong agent as one that *replaces* the
+superseded value rather than appending the new one. We tested that.
+
+| Strategy                        | Score   |
+|---------------------------------|---------|
+| Keep all, prepend new (current) | 0.80382 |
+| Drop most recent phrase         | 0.79858 |
+| Drop least-similar phrase       | 0.80196 |
+
+Both removal strategies underperform. The evaluator does not reveal which
+constraint was superseded, so any removal heuristic sometimes discards a phrase
+that is still true of the target — and the cost of losing a valid constraint
+exceeds the cost of retaining a stale one, since BM25 scores conjunctive matches
+higher. Prepending the new value is sufficient: it dominates the query without
+requiring us to guess what to delete.
+
+The residual MTTC gap on these sessions is largely structural — the evaluator
+ignores hits before the override turn fires, so no agent can converge earlier
+than turn 3 or 4 on them.
+
+Measured at the 0.80382 configuration.
 
 ## Constraint entropy analysis
 
@@ -137,69 +255,7 @@ reranker would close this gap; it did not (see below). The deficit appears to be
 information-theoretic rather than algorithmic: when every disclosed phrase
 matches thousands of products, nothing in the transcript identifies the target.
 
-Measured at 0.80382, before phrase-adjacency clauses were added.
-
-## Semantic reranking (tested, rejected)
-
-MiniLM-L6-v2 embeddings pre-computed over all 50,000 products, used to reorder
-the FTS candidate pool. `fts_weight` controls how much of the original lexical
-ordering is preserved — low values mean near-pure semantic ordering.
-
-Score rises monotonically as semantic influence is reduced (0.602 at weight 0.1,
-0.790 at 2.0, 0.797 at 5.0, 0.805 at 10.0), converging on the no-rerank baseline
-without ever exceeding it. Shrinking the candidate pool to 15 did not help
-either (0.801).
-
-The reason is structural: the simulated customer quotes the target product's own
-`features` and `details` verbatim, so an exact lexical match is near-certain
-evidence of identity. Embedding similarity dilutes that into topical proximity —
-it cannot distinguish the product a phrase was copied from and a product that
-merely sounds similar.
-
-Component disabled. The submitted agent has no model dependency and runs on the
-Python standard library alone.
-
-## Template drift robustness
-
-Our extraction originally keyed on three exact lead-in strings from the
-simulator. To test whether that would survive a rewording in the private
-evaluation set, we built a separate harness (`eval/drift_test.py`) that rephrases
-every message template the simulator emits. The official evaluator is not
-modified; drift figures come from this separate harness and are reported as such.
-
-| Extraction      | Official templates | Rephrased templates |
-|-----------------|--------------------|---------------------|
-| Fixed-template  | 0.80695            | 0.66007             |
-| Structure-based | 0.80382            | 0.80382             |
-
-Structure-based extraction keys on the colon delimiter that separates lead-in
-from constraint, plus intent markers (`ignore`, `actually`, `no strong feelings`)
-rather than exact strings. It is invariant to the rewrite, at a cost of 0.003 on
-the official templates — a trade we accept, since the 200 public sessions are the
-set we tuned against and the 800 private sessions are the ones that count.
-
-## Override handling (three strategies tested)
-
-`intent_override` sessions replace a previously disclosed constraint mid-session.
-The organizers' own guidance describes a strong agent as one that *replaces* the
-superseded value rather than appending the new one. We tested that.
-
-| Strategy                        | Score   |
-|---------------------------------|---------|
-| Keep all, prepend new (current) | 0.80382 |
-| Drop most recent phrase         | 0.79858 |
-| Drop least-similar phrase       | 0.80196 |
-
-Both removal strategies underperform. The evaluator does not reveal which
-constraint was superseded, so any removal heuristic sometimes discards a phrase
-that is still true of the target — and the cost of losing a valid constraint
-exceeds the cost of retaining a stale one, since BM25 scores conjunctive matches
-higher. Prepending the new value is sufficient: it dominates the query without
-requiring us to guess what to delete.
-
-The residual MTTC gap on these sessions is largely structural — the evaluator
-ignores hits before the override turn fires, so no agent can converge earlier
-than turn 3 or 4 on them.
+Measured at the 0.80382 configuration.
 
 ## Oracle ceiling
 
@@ -227,8 +283,29 @@ cost of *eliciting* constraints across turns rather than being handed them. Sinc
 the evaluator discloses at most two constraints per turn and ignores hits before
 the override turn fires, that gap is largely structural.
 
-Measured at 0.80382, before phrase-adjacency clauses were added; both figures
-move together since the oracle shares the retrieval pipeline.
+Measured at the 0.80382 configuration; both figures move together, since the
+oracle shares the retrieval pipeline.
+
+## Template drift robustness
+
+Our extraction originally keyed on three exact lead-in strings from the
+simulator. To test whether that would survive a rewording in the private
+evaluation set, we built a separate harness (`eval/drift_test.py`) that rephrases
+every message template the simulator emits. The official evaluator is not
+modified; drift figures come from this separate harness and are reported as such.
+
+| Extraction      | Official templates | Rephrased templates |
+|-----------------|--------------------|---------------------|
+| Fixed-template  | 0.80695            | 0.66007             |
+| Structure-based | 0.80382            | 0.80382             |
+
+Structure-based extraction keys on the colon delimiter that separates lead-in
+from constraint, plus intent markers (`ignore`, `actually`, `no strong feelings`)
+rather than exact strings. It is invariant to the rewrite, at a small cost on the
+official templates — a trade we accept, since the 200 public sessions are the set
+we tuned against and the 800 private sessions are the ones that count.
+
+Measured at the 0.80382 configuration.
 
 ## Paraphrase sensitivity
 
@@ -265,4 +342,4 @@ copy and specification fields, which embed poorly regardless of how the query is
 worded. Closing this gap would require purpose-built product representations
 rather than embedding raw catalog text, which we did not attempt.
 
-Measured at 0.80382, before phrase-adjacency clauses were added.
+Measured at the 0.80382 configuration.
