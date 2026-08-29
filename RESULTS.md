@@ -10,7 +10,8 @@
 | - field reweighting       | 0.945 | 0.621 | 2.77 | 0.82349 |
 | - robust extraction       | 0.950 | 0.662 | 2.69 | 0.83995 |
 | + IDF filtering           | 0.905 | 0.621 | 3.08 | 0.79712 |
-| + rerank (weight 2.0)     | 0.955 | 0.556 | 2.65 | 0.81128 |
+| + category as content     | 0.945 | 0.622 | 2.77 | 0.82385 |
+| + rerank (weight 2.0)     | 0.955 | 0.556 | 2.69 | 0.81058 |
 | + rerank (weight 10.0)    | 0.950 | 0.642 | 2.69 | 0.83381 |
 
 ## Per-scenario (full system)
@@ -67,10 +68,10 @@ already narrow. Still net negative. Details below.
 **Semantic reranking (rejected).** MiniLM embeddings over the candidate pool
 never beat lexical ordering at any blend weight. Details below.
 
-The pattern across all seven: mechanisms that sharpen the discriminative signal
-(adjacency, duplication, field weighting) help. Mechanisms that filter, discard
-or dilute evidence (IDF filtering, semantic reranking, override phrase-removal)
-consistently do not.
+The pattern across every component tested: mechanisms that sharpen the
+discriminative signal (adjacency, duplication, field weighting) help.
+Mechanisms that filter, discard or dilute evidence (IDF filtering, semantic
+reranking, override phrase-removal, category as content) consistently do not.
 
 ## Phrase-adjacency clauses
 
@@ -184,6 +185,26 @@ internally; filtering on top discards conjunctive signal the ranker was using
 correctly. Disabled via `common_threshold = 1.0`. The document-frequency index
 is retained for constraint-entropy analysis and for ordering clauses by rarity.
 Measured before the category filter was added.
+
+## Category as scored content (tested, rejected)
+
+The category filter is applied as a column-scoped hard AND. We tested whether
+also emitting it as an unscoped content clause inside the OR expression — so
+that category terms contribute to ranking, not just to filtering — would help.
+
+| Config                     | HR@10 | MRR   | MTTC | Score   |
+|----------------------------|-------|-------|------|---------|
+| Category as filter only    | 0.950 | 0.654 | 2.69 | 0.83718 |
+| Category also as content   | 0.945 | 0.622 | 2.77 | 0.82385 |
+
+It costs 0.013, almost exactly what clause duplication gains. That is the same
+finding arrived at from the opposite direction: duplication helps by halving the
+category's relative weight in the score, and this change raises that weight. Once
+the pool has been gated to a single category, every surviving candidate matches
+the category equally, so category terms carry no discriminative information —
+scoring them only dilutes the constraint evidence that does discriminate.
+
+The category is most useful as a filter and least useful as a ranking signal.
 
 ## Semantic reranking (tested, rejected)
 

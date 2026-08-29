@@ -19,6 +19,7 @@ CONFIGS = {
     "- field reweighting":    {"rank": "bm25(products,0.0,6.0,4.0,2.5,2.5,1.5,1.0)"},
     "- robust extraction":    {"robust_extraction": False},
     "+ IDF filtering":        {"common_threshold": 0.15},
+    "+ category as content":  {"category_as_content": True},
     "+ rerank (weight 2.0)":  {"use_rerank": True, "fts_weight": 2.0},
     "+ rerank (weight 10.0)": {"use_rerank": True, "fts_weight": 10.0},
 }
@@ -200,6 +201,28 @@ internally; filtering on top discards conjunctive signal the ranker was using
 correctly. Disabled via `common_threshold = 1.0`. The document-frequency index
 is retained for constraint-entropy analysis and for ordering clauses by rarity.
 Measured before the category filter was added.
+"""
+
+CATCONTENT_NOTE = """
+## Category as scored content (tested, rejected)
+
+The category filter is applied as a column-scoped hard AND. We tested whether
+also emitting it as an unscoped content clause inside the OR expression — so
+that category terms contribute to ranking, not just to filtering — would help.
+
+| Config                     | HR@10 | MRR   | MTTC | Score   |
+|----------------------------|-------|-------|------|---------|
+| Category as filter only    | 0.950 | 0.654 | 2.69 | 0.83718 |
+| Category also as content   | 0.945 | 0.622 | 2.77 | 0.82385 |
+
+It costs 0.013, almost exactly what clause duplication gains. That is the same
+finding arrived at from the opposite direction: duplication helps by halving the
+category's relative weight in the score, and this change raises that weight. Once
+the pool has been gated to a single category, every surviving candidate matches
+the category equally, so category terms carry no discriminative information —
+scoring them only dilutes the constraint evidence that does discriminate.
+
+The category is most useful as a filter and least useful as a ranking signal.
 """
 
 ENTROPY_NOTE = """
@@ -384,10 +407,11 @@ rather than embedding raw catalog text, which we did not attempt.
 Measured at the 0.80382 configuration.
 """
 
+
 NOTE_BLOCKS = (PROGRESSION, COMPONENT_NOTES,
                ADJACENCY_NOTE, DUPLICATION_NOTE, TOKENCAP_NOTE, SWEEP_NOTE,
-               IDF_NOTE, RERANK_NOTE, OVERRIDE_NOTE,
-               ENTROPY_NOTE, ORACLE_NOTE, DRIFT_NOTE, PARAPHRASE_NOTE)
+               IDF_NOTE, CATCONTENT_NOTE, RERANK_NOTE, OVERRIDE_NOTE,
+               ENTROPY_NOTE, ORACLE_NOTE, DRIFT_NOTE, PARAPHRASE_NOTE,)
 # -----------------------------------------------------------------------------
 
 

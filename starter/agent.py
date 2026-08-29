@@ -41,6 +41,8 @@ DEFAULT_CONFIG = {
     # Applies to the first N phrases by rarity; no session holds more than 6,
     # so 6 duplicates every clause. 0 = off.
     "clause_duplication": 6,
+    # also emit the category as a scored content clause, not only as a hard filter
+    "category_as_content": False,
     # structure-based extraction; False falls back to fixed-template regexes
     "phrase_adjacency": True,
     "robust_extraction": True,
@@ -212,6 +214,11 @@ class Agent:
             if cat_toks:
                 cat_clause = "(" + " AND ".join(
                     f'categories : "{t}"' for t in cat_toks) + ")"
+
+        if category and cfg["category_as_content"]:
+            cat_toks = terms(category)[:4]
+            if cat_toks:
+                clauses.append("(" + " AND ".join(f'"{t}"' for t in cat_toks) + ")")
 
         rank = cfg["rank"]
         rows = []
