@@ -149,10 +149,12 @@ evaluator discloses constraints in a structurally different way — no delimiter
 or embedded in free prose — extraction degrades to treating the whole message as
 a query. That path still functions but scores lower.
 
-**No free-text capability.** The agent is built for a simulator that quotes
-catalog text verbatim. It would not handle a real shopper writing "something
-warm for hiking" — that case genuinely needs the semantic layer we measured and
-disabled here.
+**Sensitive to verbatim disclosure.** The agent is built for a simulator that
+quotes catalog text verbatim. Our score falls from 0.804 to 0.632 when the
+customer paraphrases instead — a 21% relative drop. We tested whether semantic
+reranking recovers this and it does not; the constraint is that product records
+are marketing copy and specification fields, which embed poorly regardless of
+query phrasing. See the paraphrase sensitivity section in `RESULTS.md`.
 
 **A ceiling we did not reach.** 16 of our 17 remaining misses are sessions where
 every disclosed phrase matches thousands of catalog products. No matching

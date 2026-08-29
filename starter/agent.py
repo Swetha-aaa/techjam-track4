@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
     # max tokens kept per constraint phrase
     "max_phrase_tokens": 12,
     # structure-based extraction; False falls back to fixed-template regexes
+    "phrase_adjacency": True,
     "robust_extraction": True,
     # stop asking once the customer has refused twice (boundary sessions refuse once)
     "detect_exhaustion": True,
@@ -183,8 +184,11 @@ class Agent:
             if self._phrase_rarity(ph) > threshold:
                 continue
             toks = terms(ph)[:cap]
-            if toks:
-                clauses.append("(" + " AND ".join(f'"{t}"' for t in toks) + ")")
+            if not toks:
+                continue
+            clauses.append("(" + " AND ".join(f'"{t}"' for t in toks) + ")")
+            if cfg["phrase_adjacency"] and len(toks) > 1:
+                clauses.append('"' + " ".join(toks) + '"')   # contiguous match
 
         if not clauses:                      # everything filtered — use all phrases
             for ph in ranked:
