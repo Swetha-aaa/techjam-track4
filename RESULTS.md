@@ -266,46 +266,57 @@ the maximum achievable score.
 
 | Agent  | HR@10 | MRR   | MTTC | Score   |
 |--------|-------|-------|------|---------|
-| Ours   | 0.915 | 0.624 | 3.05 | 0.80382 |
-| Oracle | 0.905 | 0.785 | 2.31 | 0.86205 |
+| Ours   | 0.950 | 0.654 | 2.69 | 0.83718 |
+| Oracle | 0.950 | 0.840 | 1.85 | 0.91005 |
 
-**We reached 93.2% of the achievable ceiling at this measurement.**
+**We reach 92.0% of the achievable ceiling.**
 
-The oracle's hit rate is *lower* than ours (0.905 vs 0.915), despite perfect
-information. Roughly 19 sessions are unsolvable in principle: every phrase the
-customer can disclose matches thousands of catalog products, so the transcript
-never identifies one item. This confirms the constraint-entropy analysis by
-construction rather than by inference — the remaining misses are a property of
-the benchmark, not a deficiency in retrieval.
+Hit rate is identical. Our agent finds every target the oracle finds, despite
+having to elicit constraints over several turns while the oracle receives all
+four immediately. Recall is therefore not a remaining weakness — it is solved to
+the limit of what the benchmark permits.
 
-The oracle's advantage is concentrated in MRR and MTTC, both of which reflect the
-cost of *eliciting* constraints across turns rather than being handed them. Since
-the evaluator discloses at most two constraints per turn and ignores hits before
-the override turn fires, that gap is largely structural.
+Both agents miss the same ~10 sessions. Those are unsolvable in principle: every
+phrase the customer can disclose matches thousands of catalog products, so the
+transcript never identifies one item. This confirms the constraint-entropy
+analysis by construction rather than by inference.
 
-Measured at the 0.80382 configuration; both figures move together, since the
-oracle shares the retrieval pipeline.
+The entire remaining gap is MRR (0.654 vs 0.840) and MTTC (2.69 vs 1.85), both of
+which measure the cost of *eliciting* constraints rather than being handed them.
+The evaluator discloses at most two constraints per turn, so an agent that must
+ask cannot match one that already knows. Per-scenario, the oracle itself caps at
+0.900 on intent_override — those sessions ignore hits before the override turn
+fires, a ceiling no agent can cross.
+
+For reference, at our earlier 0.80382 configuration the ratio was 93.2%. The
+ratio fell slightly as we improved because the oracle shares our retrieval
+pipeline and benefits from the same gains while paying no elicitation cost; the
+absolute gap is roughly unchanged (0.058 then, 0.073 now).
 
 ## Template drift robustness
 
-Our extraction originally keyed on three exact lead-in strings from the
+Our extraction originally keyed on three exact lead-in strings emitted by the
 simulator. To test whether that would survive a rewording in the private
 evaluation set, we built a separate harness (`eval/drift_test.py`) that rephrases
-every message template the simulator emits. The official evaluator is not
+every message template the simulator produces. The official evaluator is not
 modified; drift figures come from this separate harness and are reported as such.
 
 | Extraction      | Official templates | Rephrased templates |
 |-----------------|--------------------|---------------------|
 | Fixed-template  | 0.80695            | 0.66007             |
-| Structure-based | 0.80382            | 0.80382             |
+| Structure-based | 0.83718            | 0.83718             |
 
 Structure-based extraction keys on the colon delimiter that separates lead-in
 from constraint, plus intent markers (`ignore`, `actually`, `no strong feelings`)
-rather than exact strings. It is invariant to the rewrite, at a small cost on the
-official templates — a trade we accept, since the 200 public sessions are the set
-we tuned against and the 800 private sessions are the ones that count.
+rather than exact strings. It is byte-identical under the rewrite.
 
-Measured at the 0.80382 configuration.
+The fixed-template row was measured at our 0.80695 configuration, before later
+retrieval work; it is retained to show the failure mode we were guarding against
+— a 0.147 collapse when the wrapper wording changes. On the current system the
+fixed-template extractor scores marginally higher on the official templates
+(0.83995 vs 0.83718, see the ablation table), so we pay 0.003 for the invariance.
+That is a trade we accept: the 200 public sessions are the set we tuned against,
+and the 800 private sessions are the ones that count.
 
 ## Paraphrase sensitivity
 
