@@ -47,7 +47,11 @@ Three stages per turn.
    simulator's exact wording, so extraction survives a rewording of the
    templates. `eval/drift_test.py` rephrases every template the simulator emits;
    the score is byte-identical, against a 0.147 collapse for the fixed-template
-   version we started with.
+   version we started with. Turn 1 sometimes carries a constraint with no colon
+   at all ("I'm looking for Accessories Belts. Buckle closure"), so the text
+   after the category sentence is captured as a phrase. Evaluator control
+   messages — the "not quite right yet" prompt, browsing filler — are recognised
+   and never enter the phrase set.
 
 2. CATEGORY GATING. Turn 1 always names the product category. ANDing it against
    the `categories` column before scoring narrows 50,000 products to a few
@@ -63,11 +67,14 @@ Three stages per turn.
 
 Recommendations are returned on EVERY turn. The evaluator checks the
 recommendation list before it reads `ask_attribute`, so asking costs nothing and
-there is never a reason to withhold a guess. `ask_attribute` is set to "other",
+there is never a reason to withhold a guess. `ask_attribute` is normally "other",
 which the evaluator treats as a wildcard matching any undisclosed constraint;
 the named attributes fish in far smaller buckets (across all 800 constraint
 instances: 404 classify as `feature`, 302 `material`, 60 `color`, 19 `style`,
-11 `size`, 4 `use_case`).
+11 `size`, 4 `use_case`). Once "other" has been refused twice we rotate through
+the named attributes rather than falling silent — a null `ask_attribute` makes
+the evaluator emit a prompt asking for a specific attribute, so going quiet
+guarantees the remaining turns yield nothing.
 
 ROBUSTNESS
 ----------
@@ -83,8 +90,10 @@ WHAT WE KNOW ABOUT THE LIMITS
 An oracle given all four constraints on turn 1 scores 0.91005 and misses the same
 sessions we do (`eval/oracle.py`). Those sessions are unsolvable in principle:
 every phrase the customer can disclose matches thousands of products, so the
-transcript never identifies one item. Our recall is at the benchmark's ceiling;
-the remaining gap is entirely the cost of eliciting constraints across turns.
+transcript never identifies one item. `eval/transcript.py --miss` prints one of
+them turn by turn, annotated with how many products each disclosed constraint
+matches. Our recall is at the benchmark's ceiling; the remaining gap is entirely
+the cost of eliciting constraints across turns.
 
 On 200 synthetic sessions built from catalog targets absent from the public set
 and entropy-stratified to match, we score 0.79056 (`eval/generalization.py`).
@@ -124,11 +133,23 @@ REFUSAL_RE = re.compile(r"no strong feelings|don't have|do not have|use your jud
 # Turn-1 category, tolerant of several lead-in verbs.
 CATEGORY_RE = re.compile(r"(?:looking for|i need|i want|after|shopping for)\s+([^.,;:]+)",
                          re.I)
-# Filler that carries no constraint information.
-FILLER_RE = re.compile(r"still exploring|just browsing|not sure yet", re.I)
+# Control messages and filler that carry no constraint information. The
+# "not quite right yet" prompt is emitted by the evaluator when ask_attribute is
+# null; ingesting it as a constraint pollutes every subsequent query.
+FILLER_RE = re.compile(r"still exploring|just browsing|not sure yet|"
+                       r"not quite right|ask me about|specific attribute", re.I)
 # Constraint body: everything after the FIRST colon. Anchored so that phrases
 # which themselves contain a colon (e.g. "Material:alloy") survive intact.
 BODY_RE = re.compile(r"^[^:]*:\s*(.+?)\.?$")
+# Turn-1 remainder: text following the category sentence. Some sessions disclose
+# their first constraint with no colon at all, e.g.
+#   "I'm looking for Accessories Belts. Buckle closure"
+TAIL_RE = re.compile(r"^[^.]*\.\s*(.+?)\.?$", re.S)
+
+# Attribute rotation used once "other" has been exhausted. A null ask_attribute
+# makes the evaluator ask us to name a specific attribute, so falling silent
+# guarantees the remaining turns disclose nothing.
+ASK_ROTATION = ["material", "color", "style", "size", "use_case", "brand", "budget"]
 
 # --- default configuration ---------------------------------------------------
 DEFAULT_CONFIG = {
@@ -147,8 +168,10 @@ DEFAULT_CONFIG = {
     "phrase_adjacency": True,
     # structure-based extraction; False falls back to fixed-template regexes
     "robust_extraction": True,
-    # stop asking once the customer has refused twice (boundary sessions refuse once)
-    "detect_exhaustion": True,
+    # capture a colon-free constraint trailing the turn-1 category sentence
+    "turn1_tail": True,
+    # after two refusals of "other", rotate named attributes instead of going quiet
+    "rotate_asks": True,
     # apply the category filter to the loose fallback query as well
     "category_filter_fallback": False,
     # also score the category as content (tested and rejected — see RESULTS.md)
@@ -243,6 +266,9 @@ class Agent:
             st["refusals"] += 1
             return
 
+        if FILLER_RE.search(msg):            # evaluator control message
+            return
+
         m = BODY_RE.search(msg)
         if m:
             phrases = [p.strip() for p in m.group(1).split(";") if p.strip()]
@@ -253,10 +279,16 @@ class Agent:
             return
 
         if turn == 1:
-            return                                       # category only
+            # No colon, but a constraint may still trail the category sentence.
+            if self.cfg["turn1_tail"]:
+                t = TAIL_RE.search(msg)
+                if t:
+                    tail = t.group(1).strip()
+                    if tail and not FILLER_RE.search(tail):
+                        st["phrases"].append(tail)
+            return
 
-        if not FILLER_RE.search(msg):
-            st["phrases"].append(msg.strip())             # unrecognised shape
+        st["phrases"].append(msg.strip())                 # unrecognised shape
 
     def _extract_fixed(self, msg, turn, st):
         """Original fixed-template extraction, retained for ablation comparison."""
@@ -395,6 +427,7 @@ class Agent:
 
         message = "Anything else that matters to you?"
         ask = "other"
+        recs = st.get("last_good", [])
 
         try:
             msg = user_message if isinstance(user_message, str) else str(user_message)
@@ -411,20 +444,22 @@ class Agent:
                     st["category"] = m.group(1).strip()
 
             # Asking is free — the evaluator checks recommendations before it
-            # reads ask_attribute — so we keep asking. Boundary sessions deflect
-            # the first ask, so only a second refusal indicates exhaustion.
-            if self.cfg["detect_exhaustion"] and st["refusals"] >= 2:
-                ask = None
+            # reads ask_attribute. Boundary sessions deflect the first ask, so
+            # only a second refusal means "other" is genuinely exhausted; at that
+            # point rotate named attributes rather than going silent.
+            if self.cfg["rotate_asks"] and st["refusals"] >= 2:
+                ask = ASK_ROTATION[(turn - 1) % len(ASK_ROTATION)]
 
             latest = st["phrases"][0] if st["phrases"] else None
             message = (f"Got it — focusing on {latest[:45]}. Anything else that "
                        f"matters?" if latest else "Let me widen the search a little.")
 
-            recs = self._recommend(st, top_k)
-            if recs:
-                st["last_good"] = recs
+            found = self._recommend(st, top_k)
+            if found:
+                recs = found
+                st["last_good"] = found
         except Exception:                    # noqa: BLE001 - must not propagate
-            recs = st.get("last_good", [])
+            pass
 
         return {
             "message": message,
