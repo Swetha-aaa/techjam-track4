@@ -401,7 +401,7 @@ The private evaluation set uses disjoint users and disjoint targets, so the
 obvious question is whether our score reflects a general capability or a fit to
 those 200.
 
-We built 200 synthetic sessions from catalog products that never appear as public
+We build 200 synthetic sessions from catalog products that never appear as public
 targets, using the evaluator's own generation path (`eval/generalization.py`).
 The scenario mix matches the official 40/40/15/5 split, and the sample is
 stratified by constraint entropy to match the public distribution — without that
@@ -409,14 +409,33 @@ control, a score gap could not be attributed, since a random catalog draw has
 different discriminability from the curated official targets. The official
 evaluator is used unmodified.
 
-| Set       | n   | Score   |
-|-----------|-----|---------|
-| Public    | 200 | 0.83995 |
-| Synthetic | 200 | 0.79265 |
+A single draw is one sample of a noisy process, so we repeat it across three
+seeds (`eval/generalization_seeds.py`):
 
-To determine whether the 0.047 difference reflects fitted components or a harder
+| Set                | HR@10 | MRR   | MTTC | Score   |
+|--------------------|-------|-------|------|---------|
+| Public             | 0.950 | 0.662 | 2.69 | 0.83995 |
+| Synthetic, draw 1  | 0.895 | 0.631 | 3.20 | 0.79275 |
+| Synthetic, draw 2  | 0.945 | 0.613 | 2.71 | 0.82227 |
+| Synthetic, draw 3  | 0.910 | 0.628 | 3.02 | 0.80297 |
+
+Synthetic mean 0.80600, standard deviation 0.01499, range 0.79275 - 0.82227. The
+gap from public is 0.034, and public sits above the whole range rather than
+inside it — the gap is not an artifact of which products a single draw happened
+to select. With three draws we report the spread rather than a significance
+claim.
+
+**The decomposition is more informative than the aggregate.** Hit rate varies
+widely across draws (0.895 - 0.945, reaching public's 0.950 at draw 2) while MRR
+is uniformly worse (0.613 - 0.631 against 0.662) with no overlap. Whether we
+*find* an uncurated target depends on how the draw fell; how well we *rank* it
+does not. That is the signature of sparse `features` and `details` fields, which
+give the ranker less to separate the target from its distractors, and it is the
+same deficit the constraint-entropy analysis identifies on the public set.
+
+To determine whether the difference reflects fitted components or a harder
 population, we ran the per-component ablation on both sets
-(`eval/generalization_diag.py`):
+(`eval/generalization_diag.py`, first draw):
 
 | Component removed  | Public delta | Synthetic delta |
 |--------------------|--------------|-----------------|
@@ -452,12 +471,13 @@ the public population, not ours.
 
 Our most recent change is a useful check on this reading. Turn-1 tail capture was
 found by inspecting one session, not by tuning, and it raised both sets together
-(public 0.83718 to 0.83995, synthetic 0.79056 to 0.79265). A fix that exploited
-something public-specific would not have moved the synthetic score.
+(public 0.83718 to 0.83995, synthetic 0.79056 to 0.79265 on the draw current at
+the time). A fix that exploited something public-specific would not have moved
+the synthetic score.
 
-We therefore report 0.83995 as our public-set result and treat 0.79265 as a
-conservative floor: the score we obtain on targets selected without any of the
-curation the official sets receive.
+We therefore report 0.83995 as our public-set result, 0.806 as our central
+estimate on uncurated targets, and 0.793 — the worst of three draws — as a
+conservative floor.
 """
 
 DRIFT_NOTE = """
