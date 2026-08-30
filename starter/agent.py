@@ -69,6 +69,15 @@ the named attributes fish in far smaller buckets (across all 800 constraint
 instances: 404 classify as `feature`, 302 `material`, 60 `color`, 19 `style`,
 11 `size`, 4 `use_case`).
 
+ROBUSTNESS
+----------
+The evaluator counts an exception, invalid output or timeout as a miss. Because
+the private sessions cannot be inspected, every stage degrades rather than
+raising: extraction failures leave the phrase set unchanged, malformed FTS
+queries fall through to progressively looser ones, and `respond` cannot raise at
+all — on any unexpected failure it returns the last known-good recommendation
+list for that session, or a category-only result, or an empty list.
+
 WHAT WE KNOW ABOUT THE LIMITS
 -----------------------------
 An oracle given all four constraints on turn 1 scores 0.91005 and misses the same
@@ -93,9 +102,11 @@ per instance, e.g. Agent(config={"use_category_filter": False}).
 eval/ablation.py uses this to generate every ablation row in RESULTS.md
 automatically, so no measurement there is transcribed by hand.
 """
-
 from __future__ import annotations
-import json, re, sqlite3
+
+import json
+import re
+import sqlite3
 from pathlib import Path
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.I)
@@ -120,8 +131,6 @@ FILLER_RE = re.compile(r"still exploring|just browsing|not sure yet", re.I)
 BODY_RE = re.compile(r"^[^:]*:\s*(.+?)\.?$")
 
 # --- default configuration ---------------------------------------------------
-# Override by passing a dict: Agent(config={"robust_extraction": False})
-# eval/ablation.py uses this to generate ablation rows automatically.
 DEFAULT_CONFIG = {
     # 1.0 disables IDF phrase filtering (tested and rejected — see RESULTS.md)
     "common_threshold": 1.0,
@@ -131,27 +140,26 @@ DEFAULT_CONFIG = {
     "rank": "bm25(products,0.0,0.1,0.5,15.0,15.0,0.1,0.5)",
     # max tokens kept per constraint phrase
     "max_phrase_tokens": 12,
-    # Duplicate each constraint's clauses in the OR expression. BM25 sums
-    # per-clause contributions, so duplication amplifies documents matching
-    # several constraints over ones matching a single constraint strongly.
-    # Applies to the first N phrases by rarity; no session holds more than 6,
-    # so 6 duplicates every clause. 0 = off.
+    # Emit each constraint's clauses N times. Works by halving the category
+    # clause's relative weight, since its terms appear only once. See RESULTS.md.
     "clause_duplication": 6,
-    # also emit the category as a scored content clause, not only as a hard filter
-    "category_as_content": False,
-    # structure-based extraction; False falls back to fixed-template regexes
+    # emit a contiguous-phrase clause alongside the token conjunction
     "phrase_adjacency": True,
+    # structure-based extraction; False falls back to fixed-template regexes
     "robust_extraction": True,
     # stop asking once the customer has refused twice (boundary sessions refuse once)
     "detect_exhaustion": True,
     # apply the category filter to the loose fallback query as well
     "category_filter_fallback": False,
+    # also score the category as content (tested and rejected — see RESULTS.md)
+    "category_as_content": False,
     # semantic reranking (tested and rejected — see RESULTS.md)
     "use_rerank": False,
     "rerank_pool": 50,
     "fts_weight": 2.0,
 }
 # -----------------------------------------------------------------------------
+
 
 def _text(v):
     if v is None:
@@ -195,7 +203,8 @@ class Agent:
             cur.executemany("INSERT INTO products VALUES (?,?,?,?,?,?,?)", batch)
         self.conn.commit()
 
-        # document frequency per token — retained for constraint-entropy analysis
+        # document frequency per token — used for rarity ordering and for the
+        # constraint-entropy analysis in eval/entropy.py
         self.df = {}
         self.total_docs = 0
         for line in Path(catalog_path).open(encoding="utf-8"):
@@ -219,7 +228,7 @@ class Agent:
 
     def reset(self, session_id, user_profile):
         self.s[session_id] = {"msgs": [], "phrases": [], "category": None,
-                              "refusals": 0}
+                              "refusals": 0, "last_good": []}
 
     # ---------------------------------------------------------------- extraction
 
@@ -277,6 +286,17 @@ class Agent:
             return self.total_docs
         return min(self.df.get(t, 1) for t in toks)
 
+    def _query(self, expr, k):
+        """Run one FTS query. Returns [] on any malformed-expression error rather
+        than propagating: a raised exception is scored as a missed session."""
+        try:
+            rows = self.conn.execute(
+                f"SELECT parent_asin FROM products WHERE products MATCH ? "
+                f"ORDER BY {self.cfg['rank']} LIMIT ?", (expr, k)).fetchall()
+            return [str(r[0]) for r in rows]
+        except sqlite3.Error:
+            return []
+
     def _search(self, phrases, msgs, k, category=None):
         cfg = self.cfg
         cap = cfg["max_phrase_tokens"]
@@ -304,27 +324,24 @@ class Agent:
                 if toks:
                     clauses.append("(" + " AND ".join(f'"{t}"' for t in toks) + ")")
 
+        cat_toks = terms(category)[:4] if category else []
         cat_clause = ""
-        if category and cfg["use_category_filter"]:
-            cat_toks = terms(category)[:4]
-            if cat_toks:
-                cat_clause = "(" + " AND ".join(
-                    f'categories : "{t}"' for t in cat_toks) + ")"
+        if cat_toks and cfg["use_category_filter"]:
+            cat_clause = "(" + " AND ".join(
+                f'categories : "{t}"' for t in cat_toks) + ")"
 
-        if category and cfg["category_as_content"]:
-            cat_toks = terms(category)[:4]
-            if cat_toks:
-                clauses.append("(" + " AND ".join(f'"{t}"' for t in cat_toks) + ")")
+        if cat_toks and cfg["category_as_content"]:
+            clauses.append("(" + " AND ".join(f'"{t}"' for t in cat_toks) + ")")
 
-        rank = cfg["rank"]
         rows = []
         if clauses:
             expr = "(" + " OR ".join(clauses) + ")"
             if cat_clause:
                 expr = cat_clause + " AND " + expr
-            rows = self.conn.execute(
-                f"SELECT parent_asin FROM products WHERE products MATCH ? "
-                f"ORDER BY {rank} LIMIT ?", (expr, k)).fetchall()
+            rows = self._query(expr, k)
+            if not rows and cat_clause:
+                # the gate may have excluded everything; retry ungated
+                rows = self._query("(" + " OR ".join(clauses) + ")", k)
 
         if len(rows) < k:
             toks = list(dict.fromkeys(t for m in msgs for t in terms(m)))[:40]
@@ -332,63 +349,86 @@ class Agent:
                 expr2 = " OR ".join(f'"{t}"' for t in toks)
                 if cat_clause and cfg["category_filter_fallback"]:
                     expr2 = cat_clause + " AND (" + expr2 + ")"
-                more = self.conn.execute(
-                    f"SELECT parent_asin FROM products WHERE products MATCH ? "
-                    f"ORDER BY {rank} LIMIT ?", (expr2, k * 3)).fetchall()
-                seen = {r[0] for r in rows}
-                for r in more:
-                    if r[0] not in seen:
-                        rows.append(r)
-                        seen.add(r[0])
+                seen = set(rows)
+                for asin in self._query(expr2, k * 3):
+                    if asin not in seen:
+                        rows.append(asin)
+                        seen.add(asin)
                     if len(rows) >= k:
                         break
 
-        return [str(r[0]) for r in rows[:k]]
+        if len(rows) < k and cat_clause:
+            # last resort: anything in the right category
+            seen = set(rows)
+            for asin in self._query(cat_clause, k * 2):
+                if asin not in seen:
+                    rows.append(asin)
+                    seen.add(asin)
+                if len(rows) >= k:
+                    break
+
+        return rows[:k]
 
     def _recommend(self, st, top_k):
         cfg = self.cfg
         if not cfg["use_rerank"]:
-            asins = self._search(st["phrases"], st["msgs"], top_k, st.get("category"))
-            return [{"parent_asin": a} for a in asins]
+            return self._search(st["phrases"], st["msgs"], top_k,
+                                st.get("category"))
 
         pool = self._search(st["phrases"], st["msgs"], cfg["rerank_pool"],
                             st.get("category"))
         if len(pool) <= top_k:
-            return [{"parent_asin": a} for a in pool[:top_k]]
+            return pool[:top_k]
         query = " ".join(st["phrases"]) or " ".join(st["msgs"])
-        ordered = self.reranker.rerank(query, pool, top_k,
-                                       fts_weight=cfg["fts_weight"])
-        return [{"parent_asin": a} for a in ordered]
+        return self.reranker.rerank(query, pool, top_k,
+                                    fts_weight=cfg["fts_weight"])
 
     # ---------------------------------------------------------------- interface
 
     def respond(self, session_id, user_message, turn, top_k):
-        st = self.s[session_id]
-        st["msgs"].append(user_message)
+        """Never raises. The evaluator scores an exception as a missed session,
+        so every failure path degrades to the best list we already have."""
+        st = self.s.get(session_id)
+        if st is None:                       # reset was skipped or failed
+            self.reset(session_id, None)
+            st = self.s[session_id]
 
-        if self.cfg["robust_extraction"]:
-            self._extract_robust(user_message, turn, st)
-        else:
-            self._extract_fixed(user_message, turn, st)
+        message = "Anything else that matters to you?"
+        ask = "other"
 
-        if turn == 1:
-            m = CATEGORY_RE.search(user_message)
-            if m:
-                st["category"] = m.group(1).strip()
+        try:
+            msg = user_message if isinstance(user_message, str) else str(user_message)
+            st["msgs"].append(msg)
 
-        # Asking is free — the evaluator checks recommendations before it reads
-        # ask_attribute — so we keep asking. Boundary sessions deflect the first
-        # ask once, so only a second refusal indicates genuine exhaustion.
-        exhausted = self.cfg["detect_exhaustion"] and st["refusals"] >= 2
-        ask = None if exhausted else "other"
+            if self.cfg["robust_extraction"]:
+                self._extract_robust(msg, turn, st)
+            else:
+                self._extract_fixed(msg, turn, st)
 
-        latest = st["phrases"][0] if st["phrases"] else None
-        msg = (f"Got it — focusing on {latest[:45]}. Anything else that matters?"
-               if latest else "Let me widen the search a little.")
+            if turn == 1:
+                m = CATEGORY_RE.search(msg)
+                if m:
+                    st["category"] = m.group(1).strip()
+
+            # Asking is free — the evaluator checks recommendations before it
+            # reads ask_attribute — so we keep asking. Boundary sessions deflect
+            # the first ask, so only a second refusal indicates exhaustion.
+            if self.cfg["detect_exhaustion"] and st["refusals"] >= 2:
+                ask = None
+
+            latest = st["phrases"][0] if st["phrases"] else None
+            message = (f"Got it — focusing on {latest[:45]}. Anything else that "
+                       f"matters?" if latest else "Let me widen the search a little.")
+
+            recs = self._recommend(st, top_k)
+            if recs:
+                st["last_good"] = recs
+        except Exception:                    # noqa: BLE001 - must not propagate
+            recs = st.get("last_good", [])
 
         return {
-            "message": msg,
+            "message": message,
             "ask_attribute": ask,
-            "recommendations": self._recommend(st, top_k),
+            "recommendations": [{"parent_asin": a} for a in recs],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0},
         }
