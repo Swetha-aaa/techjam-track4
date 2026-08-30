@@ -17,6 +17,8 @@ CONFIGS = {
     "- clause duplication":   {"clause_duplication": 0},
     "- phrase adjacency":     {"phrase_adjacency": False},
     "- field reweighting":    {"rank": "bm25(products,0.0,6.0,4.0,2.5,2.5,1.5,1.0)"},
+    "- turn-1 tail capture":  {"turn1_tail": False},
+    "- ask rotation":         {"rotate_asks": False},
     "- robust extraction":    {"robust_extraction": False},
     "+ IDF filtering":        {"common_threshold": 0.15},
     "+ category as content":  {"category_as_content": True},
@@ -49,21 +51,29 @@ Details below.
 **Field reweighting (+0.025).** Constraints are drawn from `features` and
 `details`, so those columns carry the evidence. Full sweep below.
 
-**Structure-based extraction (-0.004).** Costs a fraction on the public set and
-buys invariance to a rewording of the simulator's message templates. Details in
-the drift-robustness section below.
+**Turn-1 tail capture (+0.003).** Some sessions disclose their first constraint
+with no colon at all — `I'm looking for Accessories Belts. Buckle closure`. We
+were discarding it. Details below.
+
+**Ask rotation.** Once `other` has been refused twice, we cycle the named
+attributes instead of setting `ask_attribute` to null. Details below.
+
+**Structure-based extraction.** Buys invariance to a rewording of the
+simulator's message templates. Details in the drift-robustness section below.
 
 **IDF filtering (rejected).** Hurts at every threshold that does anything.
-Notably it costs less once the category filter is active, since the pool is
-already narrow. Still net negative. Details below.
+Details below.
+
+**Category as scored content (rejected).** Costs 0.013 — the mirror image of
+clause duplication. Details below.
 
 **Semantic reranking (rejected).** MiniLM embeddings over the candidate pool
 never beat lexical ordering at any blend weight. Details below.
 
-The pattern across all seven: mechanisms that sharpen the discriminative signal
-(adjacency, duplication, field weighting) help. Mechanisms that filter, discard
-or dilute evidence (IDF filtering, semantic reranking, override phrase-removal)
-consistently do not.
+The pattern across every component tested: mechanisms that sharpen the
+discriminative signal (adjacency, duplication, field weighting, tail capture)
+help. Mechanisms that filter, discard or dilute evidence (IDF filtering, semantic
+reranking, override phrase-removal, category as content) consistently do not.
 """
 
 PROGRESSION = """
@@ -78,6 +88,7 @@ PROGRESSION = """
 | + structure-based extraction         | 0.915 | 0.624 | 3.05 | 0.80382 |
 | + phrase-adjacency clauses           | 0.935 | 0.644 | 2.85 | 0.82394 |
 | + clause duplication                 | 0.950 | 0.654 | 2.70 | 0.83719 |
+| + turn-1 tail capture                | 0.950 | 0.662 | 2.69 | 0.83995 |
 """
 
 ADJACENCY_NOTE = """
@@ -94,8 +105,7 @@ contiguous phrase match. A product where the tokens appear adjacently satisfies
 two clauses rather than one, and BM25 ranks it accordingly.
 
 Worth +0.020, improving all three metrics simultaneously (HR 0.915 → 0.935,
-MRR 0.624 → 0.644, MTTC 3.05 → 2.85). Browsing reached 0.975 HR@10 and boundary
-reached 1.000.
+MRR 0.624 → 0.644, MTTC 3.05 → 2.85).
 """
 
 DUPLICATION_NOTE = """
@@ -140,8 +150,55 @@ letting category terms also drive the *ranking* wastes scoring weight on a
 dimension that no longer discriminates. Duplication demotes it toward being a
 pure filter and lets constraint evidence dominate the ordering.
 
-Retained at 6. Any value ≥4 produces the same effect, since the parameter's real
-function is to duplicate everything rather than to select a subset.
+Retained at 6. Any value >= 4 produces the same effect, since the parameter's
+real function is to duplicate everything rather than to select a subset.
+"""
+
+TAIL_NOTE = """
+## Turn-1 tail capture
+
+Most sessions disclose their first constraint after a colon, which our structural
+extractor reads. Some do not:
+
+    I'm looking for Accessories Belts. Buckle closure
+    I'm looking for Underwear Undershirts. Imported
+    I'm looking for Bras Everyday Bras. Date First Available: March 19, 2021
+
+The constraint trails the category sentence with no delimiter, and we were
+discarding it. On the belt session above that discarded phrase was the most
+discriminative thing the customer ever disclosed: `Buckle closure` matches 1,585
+catalog products, against 7,503 for `leather` and 15,300 for `Imported`.
+
+Capturing the text after the first sentence is worth +0.003 overall, but the gain
+is concentrated where the shape occurs: `intent_override` MRR rises from 0.763 to
+0.822, with no other scenario moving. That is the signature of a targeted fix
+rather than a tuning artifact.
+
+This was found by reading a single session end to end with
+`eval/transcript.py --miss`, not from any aggregate metric. Every other figure in
+this document is a mean over 200 sessions, and a mean cannot show you that turn 1
+extracted nothing.
+"""
+
+ROTATION_NOTE = """
+## Ask rotation
+
+Setting `ask_attribute` to null makes the evaluator reply:
+
+    Those options are not quite right yet. Ask me about one specific attribute.
+
+We originally treated two refusals of `other` as exhaustion and went silent from
+then on. That was self-defeating twice over. The prompt above is a request to
+name an attribute, not a statement that nothing remains — and our extractor was
+ingesting the prompt itself as a constraint, so every subsequent query carried
+several copies of it.
+
+Now the filler is recognised and discarded, and after two refusals we cycle
+`material -> color -> style -> size -> use_case -> brand -> budget`. On the
+public set this changes nothing, because the affected turns occur only in
+sessions already lost. It is retained for the private set, where an agent whose
+query degrades with every wasted turn is strictly worse than one that holds
+steady.
 """
 
 TOKENCAP_NOTE = """
@@ -158,7 +215,7 @@ conjunctive clause.
 | 20  | 0.82394 |
 | 30  | 0.81894 |
 
-Flat across 12–20, falling off on both sides. Below 12 the truncation discards
+Flat across 12-20, falling off on both sides. Below 12 the truncation discards
 discriminative detail from longer constraints. Above 20 the opposite problem
 appears: a 25-token marketing sentence compiled as a conjunction requires every
 token to be present, which over-constrains the query and eliminates the target.
@@ -170,7 +227,7 @@ SWEEP_NOTE = """
 ## BM25 field weight sweep
 
 | title | cats | feat | det  | store | desc | Score   |
-|-------|------|------|------|-------|------|---------|
+|-------|------|------|------|------|-------|---------|
 | 6.0   | 4.0  | 2.5  | 2.5  | 1.5   | 1.0  | 0.65161 |
 | 2.0   | 3.0  | 6.0  | 6.0  | 1.0   | 1.5  | 0.66395 |
 | 0.5   | 1.5  | 10.0 | 10.0 | 0.5   | 1.0  | 0.68322 |
@@ -198,8 +255,8 @@ IDF_NOTE = """
 Every threshold that removed phrases lowered the score, monotonically. BM25's
 ranking function already contains an IDF term, so token rarity is handled
 internally; filtering on top discards conjunctive signal the ranker was using
-correctly. Disabled via `common_threshold = 1.0`. The document-frequency index
-is retained for constraint-entropy analysis and for ordering clauses by rarity.
+correctly. Disabled via `common_threshold = 1.0`. The document-frequency index is
+retained for constraint-entropy analysis and for ordering clauses by rarity.
 Measured before the category filter was added.
 """
 
@@ -207,13 +264,13 @@ CATCONTENT_NOTE = """
 ## Category as scored content (tested, rejected)
 
 The category filter is applied as a column-scoped hard AND. We tested whether
-also emitting it as an unscoped content clause inside the OR expression — so
-that category terms contribute to ranking, not just to filtering — would help.
+also emitting it as an unscoped content clause inside the OR expression — so that
+category terms contribute to ranking, not just to filtering — would help.
 
-| Config                     | HR@10 | MRR   | MTTC | Score   |
-|----------------------------|-------|-------|------|---------|
-| Category as filter only    | 0.950 | 0.654 | 2.69 | 0.83718 |
-| Category also as content   | 0.945 | 0.622 | 2.77 | 0.82385 |
+| Config                   | HR@10 | MRR   | MTTC | Score   |
+|--------------------------|-------|-------|------|---------|
+| Category as filter only  | 0.950 | 0.654 | 2.69 | 0.83718 |
+| Category also as content | 0.945 | 0.622 | 2.77 | 0.82385 |
 
 It costs 0.013, almost exactly what clause duplication gains. That is the same
 finding arrived at from the opposite direction: duplication helps by halving the
@@ -225,35 +282,6 @@ scoring them only dilutes the constraint evidence that does discriminate.
 The category is most useful as a filter and least useful as a ranking signal.
 """
 
-ENTROPY_NOTE = """
-## Constraint entropy analysis
-
-Each session's simulated customer is built from four phrases lifted verbatim from
-the target product's own `features` and `details`. How *rare* those phrases are in
-the catalog determines whether the session is solvable at all.
-
-| Rarest constraint matches | n  | HR@10 | Rank-1 rate |
-|---------------------------|----|-------|-------------|
-| < 50 products             | 59 | 1.000 | 0.797       |
-| 50 - 500                  | 40 | 0.975 | 0.700       |
-| 500 - 5,000               | 92 | 0.870 | 0.304       |
-| > 5,000                   |  9 | 0.556 | 0.222       |
-
-Recall is perfect when any constraint is distinctive: 59/59 on sessions whose
-rarest phrase matches under 50 products. 16 of the 17 misses at the time of this
-measurement fell in the two common buckets, where every disclosed phrase
-(`Imported`, `100% Cotton`, `Pull-On closure`) matches thousands of products.
-
-The gap between HR and rank-1 rate in the 500-5k bucket (0.870 vs 0.304) is not
-a retrieval failure — the target reaches the top 10, but lexical scoring cannot
-separate it from equally-matching distractors. We hypothesised a semantic
-reranker would close this gap; it did not (see below). The deficit appears to be
-information-theoretic rather than algorithmic: when every disclosed phrase
-matches thousands of products, nothing in the transcript identifies the target.
-
-Measured at the 0.80382 configuration.
-"""
-
 RERANK_NOTE = """
 ## Semantic reranking (tested, rejected)
 
@@ -263,8 +291,8 @@ ordering is preserved — low values mean near-pure semantic ordering.
 
 Score rises monotonically as semantic influence is reduced (0.602 at weight 0.1,
 0.790 at 2.0, 0.797 at 5.0, 0.805 at 10.0), converging on the no-rerank baseline
-without ever exceeding it. Shrinking the candidate pool to 15 did not help
-either (0.801).
+without ever exceeding it. Shrinking the candidate pool to 15 did not help either
+(0.801).
 
 The reason is structural: the simulated customer quotes the target product's own
 `features` and `details` verbatim, so an exact lexical match is near-certain
@@ -274,33 +302,6 @@ merely sounds similar.
 
 Component disabled. The submitted agent has no model dependency and runs on the
 Python standard library alone.
-"""
-
-DRIFT_NOTE = """
-## Template drift robustness
-
-Our extraction originally keyed on three exact lead-in strings emitted by the
-simulator. To test whether that would survive a rewording in the private
-evaluation set, we built a separate harness (`eval/drift_test.py`) that rephrases
-every message template the simulator produces. The official evaluator is not
-modified; drift figures come from this separate harness and are reported as such.
-
-| Extraction      | Official templates | Rephrased templates |
-|-----------------|--------------------|---------------------|
-| Fixed-template  | 0.80695            | 0.66007             |
-| Structure-based | 0.83718            | 0.83718             |
-
-Structure-based extraction keys on the colon delimiter that separates lead-in
-from constraint, plus intent markers (`ignore`, `actually`, `no strong feelings`)
-rather than exact strings. It is byte-identical under the rewrite.
-
-The fixed-template row was measured at our 0.80695 configuration, before later
-retrieval work; it is retained to show the failure mode we were guarding against
-— a 0.147 collapse when the wrapper wording changes. On the current system the
-fixed-template extractor scores marginally higher on the official templates
-(0.83995 vs 0.83718, see the ablation table), so we pay 0.003 for the invariance.
-That is a trade we accept: the 200 public sessions are the set we tuned against,
-and the 800 private sessions are the ones that count.
 """
 
 OVERRIDE_NOTE = """
@@ -323,9 +324,34 @@ exceeds the cost of retaining a stale one, since BM25 scores conjunctive matches
 higher. Prepending the new value is sufficient: it dominates the query without
 requiring us to guess what to delete.
 
-The residual MTTC gap on these sessions is largely structural — the evaluator
-ignores hits before the override turn fires, so no agent can converge earlier
-than turn 3 or 4 on them.
+Measured at the 0.80382 configuration.
+"""
+
+ENTROPY_NOTE = """
+## Constraint entropy analysis
+
+Each session's simulated customer is built from four phrases lifted verbatim from
+the target product's own `features` and `details`. How *rare* those phrases are in
+the catalog determines whether the session is solvable at all.
+
+| Rarest constraint matches | n  | HR@10 | Rank-1 rate |
+|---------------------------|----|-------|-------------|
+| < 50 products             | 59 | 1.000 | 0.797       |
+| 50 - 500                  | 40 | 0.975 | 0.700       |
+| 500 - 5,000               | 92 | 0.870 | 0.304       |
+| > 5,000                   |  9 | 0.556 | 0.222       |
+
+Recall is perfect when any constraint is distinctive: 59/59 on sessions whose
+rarest phrase matches under 50 products. 16 of the 17 misses at the time of this
+measurement fell in the two common buckets, where every disclosed phrase
+(`Imported`, `100% Cotton`, `Pull-On closure`) matches thousands of products.
+
+The gap between HR and rank-1 rate in the 500-5k bucket (0.870 vs 0.304) is not a
+retrieval failure — the target reaches the top 10, but lexical scoring cannot
+separate it from equally-matching distractors. We hypothesised a semantic
+reranker would close this gap; it did not. The deficit appears to be
+information-theoretic rather than algorithmic: when every disclosed phrase
+matches thousands of products, nothing in the transcript identifies the target.
 
 Measured at the 0.80382 configuration.
 """
@@ -340,10 +366,10 @@ the maximum achievable score.
 
 | Agent  | HR@10 | MRR   | MTTC | Score   |
 |--------|-------|-------|------|---------|
-| Ours   | 0.950 | 0.654 | 2.69 | 0.83718 |
+| Ours   | 0.950 | 0.662 | 2.69 | 0.83995 |
 | Oracle | 0.950 | 0.840 | 1.85 | 0.91005 |
 
-**We reach 92.0% of the achievable ceiling.**
+**We reach 92.3% of the achievable ceiling.**
 
 Hit rate is identical. Our agent finds every target the oracle finds, despite
 having to elicit constraints over several turns while the oracle receives all
@@ -355,17 +381,16 @@ phrase the customer can disclose matches thousands of catalog products, so the
 transcript never identifies one item. This confirms the constraint-entropy
 analysis by construction rather than by inference.
 
-The entire remaining gap is MRR (0.654 vs 0.840) and MTTC (2.69 vs 1.85), both of
-which measure the cost of *eliciting* constraints rather than being handed them.
-The evaluator discloses at most two constraints per turn, so an agent that must
-ask cannot match one that already knows. Per-scenario, the oracle itself caps at
-0.900 on intent_override — those sessions ignore hits before the override turn
-fires, a ceiling no agent can cross.
+The entire remaining gap is MRR and MTTC, both of which measure the cost of
+*eliciting* constraints rather than being handed them. The evaluator discloses at
+most two constraints per turn, so an agent that must ask cannot match one that
+already knows. Per-scenario, the oracle itself caps at 0.900 on intent_override —
+those sessions ignore hits before the override turn fires, a ceiling no agent can
+cross.
 
-For reference, at our earlier 0.80382 configuration the ratio was 93.2%. The
-ratio fell slightly as we improved because the oracle shares our retrieval
-pipeline and benefits from the same gains while paying no elicitation cost; the
-absolute gap is roughly unchanged (0.058 then, 0.073 now).
+The oracle is unaffected by our extraction work, since it never parses a message.
+Turn-1 tail capture therefore closed real distance: the ratio moved from 92.0% to
+92.3% with the ceiling itself unchanged.
 """
 
 GENERALIZATION_NOTE = """
@@ -373,7 +398,7 @@ GENERALIZATION_NOTE = """
 
 Every figure above comes from the same 200 public sessions we developed against.
 The private evaluation set uses disjoint users and disjoint targets, so the
-obvious question is whether 0.83718 reflects a general capability or a fit to
+obvious question is whether our score reflects a general capability or a fit to
 those 200.
 
 We built 200 synthetic sessions from catalog products that never appear as public
@@ -384,38 +409,38 @@ control, a score gap could not be attributed, since a random catalog draw has
 different discriminability from the curated official targets. The official
 evaluator is used unmodified.
 
-| Set       | n   | HR@10 | MRR   | MTTC | Score   |
-|-----------|-----|-------|-------|------|---------|
-| Public    | 200 | 0.950 | 0.654 | 2.69 | 0.83718 |
-| Synthetic | 200 | 0.895 | 0.624 | 3.21 | 0.79056 |
+| Set       | n   | Score   |
+|-----------|-----|---------|
+| Public    | 200 | 0.83995 |
+| Synthetic | 200 | 0.79265 |
 
-The synthetic score is 0.047 lower. To determine whether that reflects fitted
-components or a harder population, we ran the per-component ablation on both sets
+To determine whether the 0.047 difference reflects fitted components or a harder
+population, we ran the per-component ablation on both sets
 (`eval/generalization_diag.py`):
 
-| Component removed   | Public delta | Synthetic delta |
-|---------------------|--------------|-----------------|
-| Category filter     | -0.13478     | -0.09033        |
-| Clause duplication  | -0.01324     | -0.01376        |
-| Phrase adjacency    | -0.00639     | -0.00796        |
-| Field reweighting   | -0.01369     | -0.00178        |
+| Component removed  | Public delta | Synthetic delta |
+|--------------------|--------------|-----------------|
+| Category filter    | -0.13829     | -0.10095        |
+| Clause duplication | -0.01232     | -0.01359        |
+| Phrase adjacency   | -0.00616     | -0.01193        |
+| Field reweighting  | -0.00934     | -0.00374        |
 
 **No component is fitted.** Every one keeps its sign on both sets. Clause
-duplication and phrase adjacency — the two components whose mechanisms we
-isolated experimentally — transfer within 0.0016, which is the strongest evidence
-here: the components we understand are the components that generalise.
+duplication transfers within 0.0013, and phrase adjacency is worth roughly
+*twice* as much on unseen targets as on the set we tuned against — the opposite
+of an overfitting signature. These are the two components whose mechanisms we
+isolated experimentally, which is the pattern worth noting: the components we
+understand are the components that generalise.
 
-Field reweighting is the weakest transfer, worth 0.014 on the public set and
-0.002 on synthetic. It is also the most heavily tuned component (a six-point
+Field reweighting is the weakest transfer, worth 0.009 on the public set and
+0.004 on synthetic. It is also the most heavily tuned component (a six-point
 weight sweep) and the least mechanistically explained, so it is the plausible
 locus of whatever fitting exists. It remains positive on both sets, so there is
-nothing to correct, but we would treat its public-set contribution as an
-overestimate.
+nothing to correct, but we treat its public-set contribution as an overestimate.
 
-The category filter is worth less on synthetic targets (-0.090 against -0.135).
-That points at population rather than fitting: products drawn at random from the
-catalog sit in broader and messier category paths, so the hard gate removes less
-of the pool.
+The category filter is worth less on synthetic targets. That points at population
+rather than fitting: products drawn at random from the catalog sit in broader and
+messier category paths, so the hard gate removes less of the pool.
 
 **We read the gap as population difficulty rather than overfitting.** The
 official targets come from a pipeline requiring usable pre-target purchase
@@ -425,9 +450,45 @@ catalog, including obscure records with sparse fields. The private 800 are
 generated by the same curated pipeline as the public 200, so they should resemble
 the public population, not ours.
 
-We therefore report 0.83718 as our public-set result and treat 0.79056 as a
+Our most recent change is a useful check on this reading. Turn-1 tail capture was
+found by inspecting one session, not by tuning, and it raised both sets together
+(public 0.83718 to 0.83995, synthetic 0.79056 to 0.79265). A fix that exploited
+something public-specific would not have moved the synthetic score.
+
+We therefore report 0.83995 as our public-set result and treat 0.79265 as a
 conservative floor: the score we obtain on targets selected without any of the
 curation the official sets receive.
+"""
+
+DRIFT_NOTE = """
+## Template drift robustness
+
+Our extraction originally keyed on three exact lead-in strings emitted by the
+simulator. To test whether that would survive a rewording in the private
+evaluation set, we built a separate harness (`eval/drift_test.py`) that rephrases
+every message template the simulator produces. The official evaluator is not
+modified; drift figures come from this separate harness and are reported as such.
+
+| Extraction      | Official templates | Rephrased templates |
+|-----------------|--------------------|---------------------|
+| Fixed-template  | 0.80695            | 0.66007             |
+| Structure-based | 0.83995            | 0.83995             |
+
+Structure-based extraction keys on the colon delimiter that separates lead-in
+from constraint, plus intent markers (`ignore`, `actually`, `no strong feelings`)
+rather than exact strings. It is byte-identical under the rewrite.
+
+The fixed-template row was measured at our 0.80695 configuration, before later
+retrieval work; it is retained to show the failure mode we were guarding against
+— a 0.147 collapse when the wrapper wording changes.
+
+The invariance is now free. Until turn-1 tail capture was added, the fixed-
+template extractor scored 0.003 higher on the official templates, and we treated
+that as the price of robustness. It read the colon-free turn-1 constraint that
+our structural path was discarding. With that gap closed, the two extractors
+score identically on the official templates (0.83995 both, see the
+`- robust extraction` row above) while only the structural one survives a
+rewording. There is no longer a trade to justify.
 """
 
 PARAPHRASE_NOTE = """
@@ -469,11 +530,12 @@ rather than embedding raw catalog text, which we did not attempt.
 Measured at the 0.80382 configuration.
 """
 
-
 NOTE_BLOCKS = (PROGRESSION, COMPONENT_NOTES,
-               ADJACENCY_NOTE, DUPLICATION_NOTE, TOKENCAP_NOTE, SWEEP_NOTE,
+               ADJACENCY_NOTE, DUPLICATION_NOTE, TAIL_NOTE, ROTATION_NOTE,
+               TOKENCAP_NOTE, SWEEP_NOTE,
                IDF_NOTE, CATCONTENT_NOTE, RERANK_NOTE, OVERRIDE_NOTE,
-               ENTROPY_NOTE, ORACLE_NOTE, GENERALIZATION_NOTE, DRIFT_NOTE, PARAPHRASE_NOTE,)
+               ENTROPY_NOTE, ORACLE_NOTE, GENERALIZATION_NOTE, DRIFT_NOTE,
+               PARAPHRASE_NOTE)
 # -----------------------------------------------------------------------------
 
 
