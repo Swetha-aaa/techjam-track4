@@ -140,6 +140,15 @@ letting category terms also drive the *ranking* wastes scoring weight on a
 dimension that no longer discriminates. Duplication demotes it toward being a
 pure filter and lets constraint evidence dominate the ordering.
 
+**It is a property of our query construction, not of the benchmark.** The
+category is already a hard gate, so the principled alternative is to filter
+outside the `MATCH` expression entirely — a join against an unindexed column, or
+a precomputed rowid set — after which category contributes zero to ranking by
+construction and duplication becomes a no-op. We kept the in-match form because
+the mechanism is now measured from both directions and the behaviour is
+understood. The +0.013 should be read as recovering weight we spent, not as free
+gain.
+
 Retained at 6. Any value >= 4 produces the same effect, since the parameter's
 real function is to duplicate everything rather than to select a subset.
 
