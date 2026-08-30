@@ -492,3 +492,47 @@ worded. Closing this gap would require purpose-built product representations
 rather than embedding raw catalog text, which we did not attempt.
 
 Measured at the 0.80382 configuration.
+
+## Latency and resource profile
+
+The submission rules ask for latency to be disclosed. Measured with
+`eval/perf.py` on a Windows ARM64 laptop (Snapdragon X), Python 3.14, across all
+528 turns of the 200 public sessions.
+
+| Measure                              | Value    |
+|--------------------------------------|----------|
+| Median per-turn latency              | 10.5 ms  |
+| Mean per-turn latency                | 15.3 ms  |
+| p95 per-turn latency                 | 43.5 ms  |
+| p99 per-turn latency                 | 84.4 ms  |
+| Worst single turn                    | 144.7 ms |
+| Full 200-session run, after startup  | 8.3 s    |
+| FTS5 index build (once per process)  | 33.6 s   |
+| Peak RSS                             | 388.4 MB |
+| ...baseline before agent constructed | 237.8 MB |
+| ...marginal cost of the agent        | ~150 MB  |
+| LLM tokens consumed                  | 0        |
+
+Two figures deserve qualification rather than a favourable reading.
+
+**The 388 MB peak is not all ours.** 237.8 MB is already resident before the
+agent is constructed — the Python interpreter plus the evaluator's own in-memory
+catalog. The agent's marginal footprint is roughly 150 MB, essentially all of it
+the SQLite FTS5 index over 50,000 products. Note that Python-level allocation
+accounts for only 10.4 MB of that; the index lives in SQLite's C layer, which
+`tracemalloc` cannot see. Reporting the Python figure alone would understate the
+real cost by an order of magnitude.
+
+**The 33.6 s startup is a one-off.** It is index construction, paid once per
+process rather than per session or per turn. Amortised over 200 sessions it is
+168 ms each; over the 800 private sessions it would be 42 ms each. If startup
+cost mattered more than it does here, the index could be built once and attached
+from disk.
+
+The agent imports nothing beyond the Python standard library, downloads no model
+weights, and makes no network calls. `psutil` is used by this profiling script
+only and is not a dependency of the submitted agent.
+
+Token usage is zero, and that is a measured fact rather than an omission: no code
+path in the submitted agent calls a model. Our semantic reranking experiments are
+retained in `src/` but disabled, for the reasons set out above.
