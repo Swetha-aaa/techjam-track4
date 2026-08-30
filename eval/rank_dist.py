@@ -1,4 +1,3 @@
-# save as check_ranks.py in the project root
 import json, collections
 from evaluator.local_evaluator import evaluate, load_jsonl, catalog_index
 from starter.agent import Agent
