@@ -589,48 +589,53 @@ Measured at the 0.80382 configuration.
 ## Latency and resource profile
 
 The submission rules ask for latency to be disclosed. Measured with
-`eval/perf.py` on a Windows ARM64 laptop (Snapdragon X), Python 3.14, across all
-528 turns of the 200 public sessions.
+`eval/perf.py` on a Windows ARM64 laptop (Snapdragon X), Python 3.14, across the
+500 turns of the 200 public sessions.
 
 | Measure                              | Value    |
 |--------------------------------------|----------|
-| Median per-turn latency              | 11 ms    |
-| p95 per-turn latency                 | 44 ms    |
-| p99 per-turn latency                 | 84 ms    |
-| Full 200-session run, after startup  | 8.4 s    |
-| FTS5 index build (once per process)  | 32.3 s   |
-| Peak RSS                             | 386.4 MB |
-| ...baseline before agent constructed | 236.3 MB |
-| ...marginal cost of the agent        | ~150 MB  |
+| Median per-turn latency              | 30.6 ms  |
+| Mean per-turn latency                | 44.9 ms  |
+| p95 per-turn latency                 | 130.4 ms |
+| p99 per-turn latency                 | 247.5 ms |
+| Worst single turn                    | 374.7 ms |
+| Full 200-session run, after startup  | 23.1 s   |
+| FTS5 index build (once per process)  | 69.2 s   |
+| Peak RSS                             | 442.1 MB |
+| ...baseline before agent constructed | 236.6 MB |
+| ...marginal cost of the agent        | ~205 MB  |
 | LLM tokens consumed                  | 0        |
 
 Unlike every other figure in this document, these are wall-clock measurements and
-vary by a millisecond or two between runs. The scores do not: the agent is
-deterministic, so a change in score is always a real effect of a code change.
-These figures were taken before exact-substring rescoring was enabled; that
-component adds a substring scan over 20 candidates per turn, which is small
-relative to the FTS query but not zero.
+vary between runs. The scores do not: the agent is deterministic, so a change in
+score is always a real effect of a code change.
+
+**Exact-substring rescoring roughly tripled per-turn latency.** Before that
+component the median was 10.9 ms and the index build 32 s. The cost is a second
+pass over the catalog at construction time, caching the lowercased
+features+details text of all 50,000 products, plus a substring scan over 20
+candidates per turn. Python-level allocation rose from 10.4 MB to 52.9 MB, which
+is that cache. We consider 31 ms per turn an acceptable price for +0.023, but it
+is a real cost and it is the reason the component is not free.
 
 Two figures deserve qualification rather than a favourable reading.
 
-**The peak RSS is not all ours.** 236 MB is already resident before the agent is
-constructed — the Python interpreter plus the evaluator's own in-memory catalog.
-The agent's marginal footprint is roughly 150 MB, essentially all of it the
-SQLite FTS5 index over 50,000 products. Python-level allocation accounts for only
-10.4 MB of that; the index lives in SQLite's C layer, which `tracemalloc` cannot
-see. Reporting the Python figure alone would understate the real cost by an order
-of magnitude.
+**The peak RSS is not all ours.** 236.6 MB is already resident before the agent
+is constructed — the Python interpreter plus the evaluator's own in-memory
+catalog. The agent's marginal footprint is roughly 205 MB: the SQLite FTS5 index
+over 50,000 products, plus the 53 MB substring cache. Note that the index itself
+lives in SQLite's C layer, which `tracemalloc` cannot see, so reporting the
+Python figure alone would understate the real cost substantially.
 
-**The 32 s startup is a one-off.** It is index construction, paid once per
-process rather than per session or per turn. Amortised over 200 sessions it is
-161 ms each; over the 800 private sessions it would be 40 ms each. If startup
-cost mattered more than it does here, the index could be built once and attached
-from disk.
+**The 69 s startup is a one-off.** It is index construction plus cache building,
+paid once per process rather than per session or per turn. Amortised over 200
+sessions it is 346 ms each; over the 800 private sessions it would be 86 ms each.
+If startup cost mattered more than it does here, the index could be built once
+and attached from disk.
 
 The agent imports nothing beyond the Python standard library, downloads no model
 weights, and makes no network calls. `psutil` is used by this profiling script
 only and is not a dependency of the submitted agent.
 
 Token usage is zero, and that is a measured fact rather than an omission: no code
-path in the submitted agent calls a model. Our semantic reranking experiments are
-retained in `src/` but disabled, for the reasons set out above.
+path in the submitted agent calls a model.
