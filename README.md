@@ -9,7 +9,7 @@ ranked as possible.
 organizer's BM25 baseline of **0.10671** — a 7.9× improvement. Hit rate 0.950.
 
 The agent uses **no machine-learning model and requires no network access.** It
-runs on the Python standard library alone. Median latency is 10.5 ms per turn and
+runs on the Python standard library alone. Median latency is ~11 ms per turn and
 it consumes zero LLM tokens.
 
 We also measured a ceiling. An oracle agent handed all four constraints on turn 1
@@ -107,7 +107,9 @@ python -m eval.transcript --miss        # inspect the first session we fail
 
 Everything is **deterministic** — no model sampling, and the evaluator seeds its
 RNG per session, so repeated runs produce byte-identical results. Any change in
-score is a real effect of a code change, never variance.
+score is a real effect of a code change, never variance. (Latency figures from
+`eval.perf` are wall-clock and vary a little between runs; every other number
+here does not.)
 
 The ablation sweep loads a sentence-transformers model for the two rejected
 rerank configurations. To run it without that dependency, remove those entries
@@ -210,7 +212,46 @@ constraints across turns rather than being handed them.
 
 ---
 
+## Given more time
 
+Each of these follows from a measurement above rather than from speculation.
+
+**Purpose-built product representations.** Our paraphrase experiment localizes
+the real-world weakness precisely: the failure is on the document side, not the
+query side. We would normalize catalog records into canonical attribute
+statements at index time — so that `Material:alloy` and "it's made of alloy" meet
+in the same space — rather than embedding raw marketing copy. This is the one
+change our data says would move the number that matters outside this benchmark.
+
+**Gate outside the match expression.** The category is a hard filter, but it
+currently sits inside the scored FTS expression, which is the only reason clause
+duplication earns anything. Filtering via a precomputed rowid set instead would
+make the category contribute exactly zero to ranking by construction, and remove
+the need for duplication entirely — a simpler system with the same behaviour.
+
+**Question selection by information gain.** Our entire remaining gap to the
+oracle is MRR and MTTC — the cost of eliciting constraints across turns. We
+currently rotate through attributes in a fixed order. Choosing the question that
+best partitions the current candidate set attacks that gap directly, and it is
+the only part of the score still open to us.
+
+**Wider generalization sampling.** Three synthetic draws give a range but not a
+confidence interval. More draws, and a stratification that varies category
+breadth as well as constraint entropy, would let us say something firmer about
+the private set than "0.806 on average."
+
+---
+
+## Team contributions
+
+| Member | Contribution |
+|---|---|
+| Swetha | Protocol analysis, agent implementation, full measurement suite |
+| TBC | TBC |
+| TBC | TBC |
+| TBC | TBC |
+
+---
 
 Organizer documentation for the challenge is preserved in `KIT_README.md` and
 `docs/`.

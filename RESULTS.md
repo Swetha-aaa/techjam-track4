@@ -530,21 +530,25 @@ The submission rules ask for latency to be disclosed. Measured with
 
 | Measure                              | Value    |
 |--------------------------------------|----------|
-| Median per-turn latency              | 10.5 ms  |
-| Mean per-turn latency                | 15.3 ms  |
-| p95 per-turn latency                 | 43.5 ms  |
-| p99 per-turn latency                 | 84.4 ms  |
-| Worst single turn                    | 144.7 ms |
-| Full 200-session run, after startup  | 8.3 s    |
-| FTS5 index build (once per process)  | 33.6 s   |
-| Peak RSS                             | 388.4 MB |
-| ...baseline before agent constructed | 237.8 MB |
+| Median per-turn latency              | 11.3 ms  |
+| Mean per-turn latency                | 16.5 ms  |
+| p95 per-turn latency                 | 46.8 ms  |
+| p99 per-turn latency                 | 90.6 ms  |
+| Worst single turn                    | 155.4 ms |
+| Full 200-session run, after startup  | 8.9 s    |
+| FTS5 index build (once per process)  | 32.2 s   |
+| Peak RSS                             | 387.3 MB |
+| ...baseline before agent constructed | 236.1 MB |
 | ...marginal cost of the agent        | ~150 MB  |
 | LLM tokens consumed                  | 0        |
 
+Unlike every other figure in this document, these are wall-clock measurements and
+vary by a millisecond or two between runs. The scores do not: the agent is
+deterministic, so a change in score is always a real effect of a code change.
+
 Two figures deserve qualification rather than a favourable reading.
 
-**The 388 MB peak is not all ours.** 237.8 MB is already resident before the
+**The 387 MB peak is not all ours.** 236.1 MB is already resident before the
 agent is constructed — the Python interpreter plus the evaluator's own in-memory
 catalog. The agent's marginal footprint is roughly 150 MB, essentially all of it
 the SQLite FTS5 index over 50,000 products. Note that Python-level allocation
@@ -552,9 +556,9 @@ accounts for only 10.4 MB of that; the index lives in SQLite's C layer, which
 `tracemalloc` cannot see. Reporting the Python figure alone would understate the
 real cost by an order of magnitude.
 
-**The 33.6 s startup is a one-off.** It is index construction, paid once per
+**The 32 s startup is a one-off.** It is index construction, paid once per
 process rather than per session or per turn. Amortised over 200 sessions it is
-168 ms each; over the 800 private sessions it would be 42 ms each. If startup
+161 ms each; over the 800 private sessions it would be 40 ms each. If startup
 cost mattered more than it does here, the index could be built once and attached
 from disk.
 
