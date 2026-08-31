@@ -9,7 +9,7 @@ ranked as possible.
 organizer's BM25 baseline of **0.10671** — an 8.1× improvement. Hit rate 0.970.
 
 The agent uses **no machine-learning model and requires no network access.** It
-runs on the Python standard library alone. Median latency is ~31 ms per turn and
+runs on the Python standard library alone. Median latency is ~11 ms per turn and
 it consumes zero LLM tokens.
 
 We also measured a ceiling. An oracle agent handed all four constraints on turn 1

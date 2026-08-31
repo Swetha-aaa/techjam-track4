@@ -18,7 +18,7 @@ The number we care about more: we built an **oracle** — an agent that reads th
 
 Both agents miss the same 6 sessions, where every phrase the customer can disclose matches thousands of catalog products, so the transcript never identifies one item.
 
-The agent uses **no ML model, makes no network calls, and imports nothing beyond the Python standard library.** Median latency ~31 ms per turn, zero LLM tokens.
+The agent uses **no ML model, makes no network calls, and imports nothing beyond the Python standard library.** Median latency ~11 ms per turn, zero LLM tokens.
 
 **Code:** https://github.com/Swetha-aaa/techjam-track4
 **Demo video:** PASTE YOUTUBE URL HERE
@@ -72,7 +72,7 @@ The actual mechanism is an asymmetry. The category clause appears once while con
 | Dependencies | None beyond the Python standard library |
 | Model weights | None |
 | Network | Not required |
-| Per-turn latency | ~31 ms median |
+| Per-turn latency | ~11 ms median |
 | Memory | ~150 MB, essentially all the FTS5 index |
 | LLM tokens | 0 |
 | Determinism | Same input, same output, to five decimals |
