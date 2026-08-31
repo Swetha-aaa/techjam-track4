@@ -1,7 +1,7 @@
 """TechJam 2026 Track 4 — conversational shopping agent.
 
-Score 0.83995 on the 200 public development sessions, against an organizer
-baseline of 0.10671. Hit rate 0.950 — identical to an oracle handed all four
+Score 0.86267 on the 200 public development sessions, against an organizer
+baseline of 0.10671. Hit rate 0.970 — identical to an oracle handed all four
 constraints on turn 1. Standard library only: no model, no network, no
 dependencies. Full measurements and rejected experiments in RESULTS.md.
 
@@ -39,7 +39,7 @@ retained and disabled.
 
 HOW IT WORKS
 ------------
-Three stages per turn.
+Four stages per turn.
 
 1. EXTRACTION (`_extract_robust`). Constraints are disclosed as
    `<lead-in>: <phrase>[; <phrase>]`. We key on the colon delimiter and on intent
@@ -65,6 +65,14 @@ Three stages per turn.
    match, every clause emitted twice, BM25 weighted toward `features` and
    `details` where the constraints originate.
 
+4. EXACT RESCORING (`_rescore`). BM25 scores token overlap, which is a proxy for
+   what actually matters: whether a disclosed phrase was copied
+   character-for-character out of one particular record. We reorder the top 20
+   candidates by how many constraints appear as literal substrings of their
+   features/details text, keeping FTS order as the tiebreak. Worth +0.023, the
+   second largest component. It degrades safely — a pool with no substring hits
+   comes back in exactly the order retrieval produced.
+
 Recommendations are returned on EVERY turn. The evaluator checks the
 recommendation list before it reads `ask_attribute`, so asking costs nothing and
 there is never a reason to withhold a guess. `ask_attribute` is normally "other",
@@ -81,25 +89,32 @@ ROBUSTNESS
 The evaluator counts an exception, invalid output or timeout as a miss. Because
 the private sessions cannot be inspected, every stage degrades rather than
 raising: extraction failures leave the phrase set unchanged, malformed FTS
-queries fall through to progressively looser ones, and `respond` cannot raise at
-all — on any unexpected failure it returns the last known-good recommendation
-list for that session, or a category-only result, or an empty list.
+queries fall through to progressively looser ones, rescoring is a no-op when
+nothing matches literally, and `respond` cannot raise at all — on any unexpected
+failure it returns the last known-good recommendation list for that session, or a
+category-only result, or an empty list.
 
 WHAT WE KNOW ABOUT THE LIMITS
 -----------------------------
-An oracle given all four constraints on turn 1 scores 0.91005 and misses the same
-sessions we do (`eval/oracle.py`). Those sessions are unsolvable in principle:
-every phrase the customer can disclose matches thousands of products, so the
-transcript never identifies one item. `eval/transcript.py --miss` prints one of
-them turn by turn, annotated with how many products each disclosed constraint
-matches. Our recall is at the benchmark's ceiling; the remaining gap is entirely
-the cost of eliciting constraints across turns.
+An oracle given all four constraints on turn 1 scores 0.93238 and misses the same
+six sessions we do (`eval/oracle.py`). Those appear to be unsolvable in
+principle: every phrase the customer can disclose matches thousands of products.
+`eval/transcript.py --miss` prints one of them turn by turn, annotated with how
+many products each constraint matches.
+
+We state that more carefully than we once did. An earlier version of this agent
+scored 0.950 hit rate — also identical to the oracle's at the time — and we
+concluded recall was solved and the ten misses were unsolvable. Exact rescoring
+then recovered four of them. The oracle shares our ranking stage, so a weakness
+there lowers both agents together and reads as a property of the benchmark rather
+than of our code. An oracle built from your own pipeline measures the pipeline,
+not the task.
 
 On 200 synthetic sessions built from catalog targets absent from the public set
 and entropy-stratified to match, we score 0.806 on average across three seeds
-(range 0.793 - 0.822, `eval/generalization_seeds.py`). Per-component ablation on
-both sets shows every component keeping its sign, and the two whose mechanisms we
-isolated transferring within 0.0013.
+(range 0.793 - 0.822, `eval/generalization_seeds.py`), measured at the 0.83995
+configuration. Per-component ablation on both sets shows every component keeping
+its sign.
 
 Under paraphrase the score falls to 0.632. That number is the honest measure of
 how much of this result belongs to the benchmark's design rather than to general
@@ -177,6 +192,10 @@ DEFAULT_CONFIG = {
     "category_filter_fallback": False,
     # also score the category as content (tested and rejected — see RESULTS.md)
     "category_as_content": False,
+    # Reorder the FTS pool by literal-substring hits against features/details.
+    # Worth +0.023; flat across pool sizes 20-200, so 20 is retained as cheapest.
+    "exact_rescore": True,
+    "rescore_pool": 20,
     # semantic reranking (tested and rejected — see RESULTS.md)
     "use_rerank": False,
     "rerank_pool": 50,
@@ -229,11 +248,19 @@ class Agent:
 
         # document frequency per token — used for rarity ordering and for the
         # constraint-entropy analysis in eval/entropy.py
+        #
+        # self.blob caches lowercased features+details per product so the exact
+        # rescorer can test literal substring containment without going back to
+        # SQLite. Those are the two fields the simulator copies constraints out
+        # of, so nothing else is worth caching.
         self.df = {}
+        self.blob = {}
         self.total_docs = 0
         for line in Path(catalog_path).open(encoding="utf-8"):
             p = json.loads(line)
             self.total_docs += 1
+            self.blob[str(p["parent_asin"])] = (
+                _text(p.get("features")) + " " + _text(p.get("details"))).lower()
             blob = " ".join(_text(p.get(f)) for f in
                             ("title", "categories", "features", "details",
                              "store", "description"))
@@ -277,7 +304,8 @@ class Agent:
                 st["phrases"] = phrases + st["phrases"]
             else:
                 st["phrases"].extend(phrases)
-            st["last_phrase"] = phrases[-1]
+            if phrases:
+                st["last_phrase"] = phrases[-1]
             return
 
         if turn == 1:
@@ -405,8 +433,35 @@ class Agent:
 
         return rows[:k]
 
+    def _rescore(self, asins, phrases, k):
+        """Reorder a candidate pool by literal-substring hits.
+
+        BM25 scores token overlap, which is a proxy. The constraints were copied
+        character-for-character out of one product's features/details, so testing
+        for the phrase as a literal substring is the direct measurement rather
+        than the proxy. Candidates are sorted by how many disclosed phrases they
+        contain verbatim; the FTS ordering breaks ties, so a pool with no
+        substring hits at all comes back exactly as retrieval produced it.
+        """
+        pl = [p.strip().lower() for p in phrases if p and p.strip()]
+        if not pl:
+            return asins[:k]
+        scored = []
+        for i, a in enumerate(asins):
+            b = self.blob.get(a, "")
+            hits = sum(1 for p in pl if p in b)
+            scored.append((-hits, i, a))
+        scored.sort()
+        return [a for _, _, a in scored[:k]]
+
     def _recommend(self, st, top_k):
         cfg = self.cfg
+
+        if cfg["exact_rescore"]:
+            pool = self._search(st["phrases"], st["msgs"],
+                                cfg["rescore_pool"], st.get("category"))
+            return self._rescore(pool, st["phrases"], top_k)
+
         if not cfg["use_rerank"]:
             return self._search(st["phrases"], st["msgs"], top_k,
                                 st.get("category"))

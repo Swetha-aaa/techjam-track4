@@ -5,22 +5,23 @@ customer's messages across at most 10 turns, it must surface the customer's
 hidden target product in a top-10 recommendation list, as quickly and as highly
 ranked as possible.
 
-**Score: 0.83995** on the 200 public development sessions, against the
-organizer's BM25 baseline of **0.10671** — a 7.9× improvement. Hit rate 0.950.
+**Score: 0.86267** on the 200 public development sessions, against the
+organizer's BM25 baseline of **0.10671** — an 8.1× improvement. Hit rate 0.970.
 
 The agent uses **no machine-learning model and requires no network access.** It
 runs on the Python standard library alone. Median latency is ~11 ms per turn and
 it consumes zero LLM tokens.
 
 We also measured a ceiling. An oracle agent handed all four constraints on turn 1
-scores 0.91005 on the same sessions, so **we reach 92.3% of what this benchmark
-permits**, with identical hit rate. Details in `RESULTS.md`.
+scores 0.93238 on the same sessions, so **we reach 92.5% of what this pipeline
+achieves with perfect information**, with identical hit rate. Details in
+`RESULTS.md`.
 
 ---
 
 ## How it works
 
-Three stages per turn.
+Four stages per turn.
 
 **1. Constraint extraction.** The simulated customer discloses constraints in the
 form `<lead-in>: <phrase>[; <phrase>]`. We extract the body after the colon
@@ -46,6 +47,15 @@ contiguously out of the target's record and contiguity is itself evidence. Group
 are OR'd and BM25 ranks the result, with column weights tuned heavily toward
 `features` and `details`, where the customer's disclosed phrases originate.
 
+**4. Exact-substring rescoring.** BM25 scores token overlap, which is a proxy for
+what we actually care about: whether a disclosed phrase was copied
+character-for-character out of one particular product's record. We reorder the
+top 20 candidates by how many constraints appear as literal substrings of their
+`features` and `details` text, keeping FTS order as the tiebreak. Worth
+**+0.023** — the second largest component — improving all three metrics at once.
+It degrades safely: a pool with no substring hits comes back in exactly the order
+retrieval produced.
+
 Recommendations are returned on **every** turn. The evaluator checks the
 recommendation list before it reads `ask_attribute`, so asking a question costs
 nothing — there is never a reason to withhold a guess.
@@ -60,8 +70,9 @@ four strings **verbatim** out of the target product's own `features` and
 An exact lexical match is therefore not an approximation of user intent; it is
 direct evidence of which product a string was copied from. This is why semantic
 reranking, IDF filtering, and phrase-removal heuristics all measurably *hurt* —
-each dilutes or discards information that exact matching was using correctly. All
-are documented with their numbers in `RESULTS.md`, including one result that
+each dilutes or discards information that exact matching was using correctly, and
+why the exact-substring rescorer is worth more than any of them. All are
+documented with their numbers in `RESULTS.md`, including one result that
 contradicts the organizers' own workshop guidance.
 
 ---
@@ -85,7 +96,7 @@ Verify:
 python -m evaluator.local_evaluator
 ```
 
-Expected: `recommended_technical_score: 0.83995`. See `SETUP.md` for details.
+Expected: `recommended_technical_score: 0.86267`. See `SETUP.md` for details.
 
 ---
 
@@ -124,12 +135,12 @@ headline results:
 
 | Question | Answer |
 |---|---|
-| How good is 0.83995? | 92.3% of a measured oracle ceiling of 0.91005 |
-| Is recall still improvable? | No — our hit rate equals the oracle's, 0.950 |
-| Why do we miss ~10 sessions? | Every disclosed phrase matches thousands of products; the oracle misses the same ones |
+| How good is 0.86267? | 92.5% of a measured oracle ceiling of 0.93238 |
+| Is recall still improvable? | Not by this pipeline — our hit rate equals the oracle's, 0.970 |
+| Why do we miss 6 sessions? | Every disclosed phrase matches thousands of products; the oracle misses the same six |
 | Are we overfitted to the public 200? | No — every component keeps its sign on synthetic sets built from unseen targets |
 | What do we score on unseen targets? | 0.806 mean across three stratified draws (range 0.793–0.822) |
-| What if the templates are reworded? | 0.83995, byte-identical |
+| What if the templates are reworded? | Byte-identical |
 | What if the customer paraphrases? | 0.632. This is the honest limit of the approach |
 
 ---
@@ -192,6 +203,15 @@ are marketing copy and specification fields, which embed poorly regardless of
 query phrasing. Closing this gap would need purpose-built product
 representations, which we did not attempt.
 
+**Our first ceiling estimate was too confident.** Before exact-substring
+rescoring, our hit rate matched the oracle's at 0.950 and we concluded that
+recall was solved and the remaining ten misses were unsolvable in principle.
+Rescoring then recovered four of them. The oracle shares our ranking stage, so a
+weakness there lowers both agents together and reads as a property of the
+benchmark rather than of our code. An oracle built from your own pipeline
+measures the pipeline, not the task. We now report the six remaining misses as
+unsolved rather than as proven unsolvable.
+
 **Extraction assumes a colon-delimited disclosure format.** If the private
 evaluator discloses constraints in a structurally different way — no delimiter,
 or embedded in free prose — extraction degrades to treating the whole message as
@@ -202,13 +222,7 @@ different targets. We built synthetic sessions from targets absent from the
 public set to test this, stratified by constraint entropy so the comparison is
 controlled, and score 0.806 on average across three draws. Every component keeps
 its sign on both sets, so no component is fitted, but we cannot verify the
-private set directly.
-
-**A ceiling we did not reach — and one we cannot.** The remaining ~10 misses are
-sessions where every disclosed phrase matches thousands of catalog products. No
-matching strategy resolves these; the oracle misses the same sessions. The rest
-of the gap to 0.91005 is MRR and MTTC, which measure the cost of eliciting
-constraints across turns rather than being handed them.
+private set directly. Those figures predate exact rescoring.
 
 ---
 
@@ -223,6 +237,12 @@ statements at index time — so that `Material:alloy` and "it's made of alloy" m
 in the same space — rather than embedding raw marketing copy. This is the one
 change our data says would move the number that matters outside this benchmark.
 
+**Rarity-weighted rescoring.** The rescorer currently counts each substring hit
+equally. A product containing `Triple Moon Pentagram Symbol` (16 catalog matches)
+is far stronger evidence than one containing `Imported` (15,300). Weighting hits
+by inverse document frequency should attack the 500–5,000 entropy bucket, where
+hit rate is high but rank-1 rate is not.
+
 **Gate outside the match expression.** The category is a hard filter, but it
 currently sits inside the scored FTS expression, which is the only reason clause
 duplication earns anything. Filtering via a precomputed rowid set instead would
@@ -232,13 +252,7 @@ the need for duplication entirely — a simpler system with the same behaviour.
 **Question selection by information gain.** Our entire remaining gap to the
 oracle is MRR and MTTC — the cost of eliciting constraints across turns. We
 currently rotate through attributes in a fixed order. Choosing the question that
-best partitions the current candidate set attacks that gap directly, and it is
-the only part of the score still open to us.
-
-**Wider generalization sampling.** Three synthetic draws give a range but not a
-confidence interval. More draws, and a stratification that varies category
-breadth as well as constraint entropy, would let us say something firmer about
-the private set than "0.806 on average."
+best partitions the current candidate set attacks that gap directly.
 
 ---
 

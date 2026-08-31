@@ -14,6 +14,7 @@ SCENARIOS = ["buying", "browsing", "intent_override", "boundary"]
 CONFIGS = {
     "Ours (full)":            {},
     "- category filter":      {"use_category_filter": False},
+    "- exact rescore":        {"exact_rescore": False},
     "- clause duplication":   {"clause_duplication": 0},
     "- phrase adjacency":     {"phrase_adjacency": False},
     "- field reweighting":    {"rank": "bm25(products,0.0,6.0,4.0,2.5,2.5,1.5,1.0)"},
@@ -22,8 +23,10 @@ CONFIGS = {
     "- robust extraction":    {"robust_extraction": False},
     "+ IDF filtering":        {"common_threshold": 0.15},
     "+ category as content":  {"category_as_content": True},
-    "+ rerank (weight 2.0)":  {"use_rerank": True, "fts_weight": 2.0},
-    "+ rerank (weight 10.0)": {"use_rerank": True, "fts_weight": 10.0},
+    "+ rerank (weight 2.0)":  {"exact_rescore": False, "use_rerank": True,
+                               "fts_weight": 2.0},
+    "+ rerank (weight 10.0)": {"exact_rescore": False, "use_rerank": True,
+                               "fts_weight": 10.0},
 }
 # -----------------------------------------------------------------------------
 
@@ -36,6 +39,11 @@ COMPONENT_NOTES = """
 column before phrase scoring narrows the pool from 50,000 to a few hundred, so
 rare-phrase signal no longer competes with matches from unrelated categories.
 The single largest component in the system.
+
+**Exact-substring rescoring (+0.023).** The top 20 FTS candidates are reordered
+by how many disclosed constraints appear as literal substrings of their
+features/details text. The second largest component, and the one that corrected a
+claim we had previously made about the benchmark's ceiling. Details below.
 
 **Phrase-adjacency clauses (+0.020).** Each constraint is compiled twice — once
 as a token conjunction and once as a contiguous phrase match. A product where the
@@ -71,9 +79,10 @@ clause duplication. Details below.
 never beat lexical ordering at any blend weight. Details below.
 
 The pattern across every component tested: mechanisms that sharpen the
-discriminative signal (adjacency, duplication, field weighting, tail capture)
-help. Mechanisms that filter, discard or dilute evidence (IDF filtering, semantic
-reranking, override phrase-removal, category as content) consistently do not.
+discriminative signal (exact rescoring, adjacency, duplication, field weighting,
+tail capture) help. Mechanisms that filter, discard or dilute evidence (IDF
+filtering, semantic reranking, override phrase-removal, category as content)
+consistently do not.
 """
 
 PROGRESSION = """
@@ -89,6 +98,55 @@ PROGRESSION = """
 | + phrase-adjacency clauses           | 0.935 | 0.644 | 2.85 | 0.82394 |
 | + clause duplication                 | 0.950 | 0.654 | 2.70 | 0.83719 |
 | + turn-1 tail capture                | 0.950 | 0.662 | 2.69 | 0.83995 |
+| + exact-substring rescoring          | 0.970 | 0.694 | 2.53 | 0.86267 |
+"""
+
+RESCORE_NOTE = """
+## Exact-substring rescoring
+
+BM25 scores token overlap. That is a proxy for the thing we actually care about,
+which is whether a disclosed phrase was copied character-for-character out of one
+particular product's record. After the FTS query returns a candidate pool, we
+count how many disclosed constraints appear as literal substrings of each
+candidate's `features` + `details` text and sort by that count, with the original
+FTS ordering as the tiebreak.
+
+| Pool | HR@10 | MRR   | MTTC | Score   | Delta    |
+|------|-------|-------|------|---------|----------|
+| off  | 0.950 | 0.662 | 2.69 | 0.83995 |          |
+| 20   | 0.970 | 0.694 | 2.53 | 0.86267 | +0.02272 |
+| 50   | 0.970 | 0.688 | 2.52 | 0.86097 | +0.02103 |
+| 100  | 0.970 | 0.686 | 2.52 | 0.86053 | +0.02059 |
+| 200  | 0.970 | 0.691 | 2.52 | 0.86169 | +0.02174 |
+
+Worth +0.023, the second largest component in the system after the category
+filter, improving all three metrics simultaneously.
+
+**It corrected a claim we had made.** Before this component our hit rate was
+0.950, identical to the oracle's at the time, and we concluded that recall was
+solved to the limit of the benchmark and that the ten remaining misses were
+unsolvable in principle. That was wrong. Four of those sessions were retrievable
+all along; BM25 could not rank the target into the top ten against distractors
+with similar token profiles. The information-theoretic argument still holds for
+the six that remain, and the oracle still misses exactly those six, but the
+earlier claim was stronger than the evidence supported. We had inferred a ceiling
+from an agreement between two systems that shared a ranking weakness.
+
+**Flat above pool 20.** All four pool sizes gain roughly the same amount, which
+is what should happen: the target is almost always within the first twenty
+candidates, so widening the pool only adds products that score zero substring
+hits and are therefore sorted below anything scoring at least one. Retained at 20
+as the cheapest setting, and the one with the best MRR.
+
+**It degrades safely.** Ties break on the original FTS index, so a pool with no
+substring hits anywhere comes back in exactly the order retrieval produced. On a
+session where the customer paraphrases — or on a private set that discloses
+constraints differently — the component cannot do worse than the retrieval it
+reorders.
+
+The mechanism is the same finding that motivates the whole system, applied one
+stage later. Retrieval uses the verbatim property to *find* candidates; this uses
+it to *order* them.
 """
 
 ADJACENCY_NOTE = """
@@ -105,7 +163,7 @@ contiguous phrase match. A product where the tokens appear adjacently satisfies
 two clauses rather than one, and BM25 ranks it accordingly.
 
 Worth +0.020, improving all three metrics simultaneously (HR 0.915 → 0.935,
-MRR 0.624 → 0.644, MTTC 3.05 → 2.85).
+MRR 0.624 → 0.644, MTTC 3.05 → 2.85). Measured at the 0.82394 configuration.
 """
 
 DUPLICATION_NOTE = """
@@ -160,7 +218,8 @@ understood. The +0.013 should be read as recovering weight we spent, not as free
 gain.
 
 Retained at 6. Any value >= 4 produces the same effect, since the parameter's
-real function is to duplicate everything rather than to select a subset.
+real function is to duplicate everything rather than to select a subset. Sweep
+measured at the 0.83719 configuration.
 """
 
 TAIL_NOTE = """
@@ -289,6 +348,7 @@ the category equally, so category terms carry no discriminative information —
 scoring them only dilutes the constraint evidence that does discriminate.
 
 The category is most useful as a filter and least useful as a ranking signal.
+Measured at the 0.83718 configuration.
 """
 
 RERANK_NOTE = """
@@ -308,6 +368,11 @@ The reason is structural: the simulated customer quotes the target product's own
 evidence of identity. Embedding similarity dilutes that into topical proximity —
 it cannot distinguish the product a phrase was copied from and a product that
 merely sounds similar.
+
+The exact-substring rescorer documented above is the constructive version of this
+same observation, and it is worth +0.023 where the embedding layer was worth
+nothing. The difference is that one measures literal provenance and the other
+measures resemblance.
 
 Component disabled. The submitted agent has no model dependency and runs on the
 Python standard library alone.
@@ -358,11 +423,12 @@ measurement fell in the two common buckets, where every disclosed phrase
 The gap between HR and rank-1 rate in the 500-5k bucket (0.870 vs 0.304) is not a
 retrieval failure — the target reaches the top 10, but lexical scoring cannot
 separate it from equally-matching distractors. We hypothesised a semantic
-reranker would close this gap; it did not. The deficit appears to be
-information-theoretic rather than algorithmic: when every disclosed phrase
-matches thousands of products, nothing in the transcript identifies the target.
+reranker would close this gap; it did not. Exact-substring rescoring, added
+later, does attack exactly this gap and is the largest single reason our hit rate
+moved from 0.950 to 0.970.
 
-Measured at the 0.80382 configuration.
+Measured at the 0.80382 configuration; the buckets are a property of the sessions
+rather than of the agent, but the HR and rank-1 columns predate exact rescoring.
 """
 
 ORACLE_NOTE = """
@@ -371,35 +437,37 @@ ORACLE_NOTE = """
 To establish what "good" means on this benchmark, we built an agent that reads
 the target product directly, receives all four constraints on turn 1, and
 searches with the same retrieval pipeline. It is not a submission — it measures
-the maximum achievable score.
+what this pipeline achieves when handed perfect information.
 
 | Agent  | HR@10 | MRR   | MTTC | Score   |
 |--------|-------|-------|------|---------|
-| Ours   | 0.950 | 0.662 | 2.69 | 0.83995 |
-| Oracle | 0.950 | 0.840 | 1.85 | 0.91005 |
+| Ours   | 0.970 | 0.694 | 2.53 | 0.86267 |
+| Oracle | 0.970 | 0.870 | 1.68 | 0.93238 |
 
-**We reach 92.3% of the achievable ceiling.**
+**We reach 92.5% of that ceiling.**
 
 Hit rate is identical. Our agent finds every target the oracle finds, despite
 having to elicit constraints over several turns while the oracle receives all
-four immediately. Recall is therefore not a remaining weakness — it is solved to
-the limit of what the benchmark permits.
+four immediately.
 
-Both agents miss the same ~10 sessions. Those are unsolvable in principle: every
-phrase the customer can disclose matches thousands of catalog products, so the
-transcript never identifies one item. This confirms the constraint-entropy
-analysis by construction rather than by inference.
+Both agents miss the same 6 sessions. Those appear to be unsolvable in principle:
+every phrase the customer can disclose matches thousands of catalog products, so
+the transcript never identifies one item.
 
-The entire remaining gap is MRR and MTTC, both of which measure the cost of
-*eliciting* constraints rather than being handed them. The evaluator discloses at
-most two constraints per turn, so an agent that must ask cannot match one that
-already knows. Per-scenario, the oracle itself caps at 0.900 on intent_override —
-those sessions ignore hits before the override turn fires, a ceiling no agent can
-cross.
+**We state that more carefully than we did before.** An earlier version of this
+document made the same claim about a different set of ten sessions, and exact
+rescoring subsequently recovered four of them. The oracle shares our ranking
+stage, so any weakness in that stage lowers both agents together and reads as a
+property of the benchmark rather than of our code. This is a real limitation of
+the method: an oracle built from your own pipeline measures the pipeline, not the
+task. We report the remaining six as unsolved rather than as proven unsolvable.
 
-The oracle is unaffected by our extraction work, since it never parses a message.
-Turn-1 tail capture therefore closed real distance: the ratio moved from 92.0% to
-92.3% with the ceiling itself unchanged.
+The remaining gap is MRR and MTTC, both of which measure the cost of *eliciting*
+constraints rather than being handed them. The evaluator discloses at most two
+constraints per turn, so an agent that must ask cannot match one that already
+knows. Per-scenario the oracle caps at 0.938 on `buying` and 0.967 on
+`intent_override` — the latter ignores hits before the override turn fires, a
+ceiling no agent can cross.
 """
 
 GENERALIZATION_NOTE = """
@@ -423,28 +491,28 @@ seeds (`eval/generalization_seeds.py`):
 
 | Set                | HR@10 | MRR   | MTTC | Score   |
 |--------------------|-------|-------|------|---------|
-| Public             | 0.950 | 0.662 | 2.69 | 0.83995 |
-| Synthetic, draw 1  | 0.895 | 0.631 | 3.20 | 0.79275 |
-| Synthetic, draw 2  | 0.945 | 0.613 | 2.71 | 0.82227 |
-| Synthetic, draw 3  | 0.910 | 0.628 | 3.02 | 0.80297 |
+| Public             | 0.970 | 0.694 | 2.53 | 0.86267 |
+| Synthetic, draw 1  | 0.890 | 0.637 | 3.25 | 0.79119 |
+| Synthetic, draw 2  | 0.960 | 0.665 | 2.58 | 0.84768 |
+| Synthetic, draw 3  | 0.915 | 0.648 | 2.96 | 0.81249 |
 
-Synthetic mean 0.80600, standard deviation 0.01499, range 0.79275 - 0.82227. The
-gap from public is 0.034, and public sits above the whole range rather than
+Synthetic mean 0.81712, standard deviation 0.02853, range 0.79119 - 0.84768. The
+gap from public is 0.046, and public sits above the whole range rather than
 inside it — the gap is not an artifact of which products a single draw happened
 to select. With three draws we report the spread rather than a significance
 claim.
 
 **The decomposition is more informative than the aggregate.** Hit rate varies
-widely across draws (0.895 - 0.945, reaching public's 0.950 at draw 2) while MRR
-is uniformly worse (0.613 - 0.631 against 0.662) with no overlap. Whether we
-*find* an uncurated target depends on how the draw fell; how well we *rank* it
-does not. That is the signature of sparse `features` and `details` fields, which
-give the ranker less to separate the target from its distractors, and it is the
-same deficit the constraint-entropy analysis identifies on the public set.
+widely across draws (0.890 - 0.960) while MRR is uniformly worse (0.637 - 0.665
+against 0.694) with no overlap. Whether we *find* an uncurated target depends on
+how the draw fell; how well we *rank* it does not. That is the signature of
+sparse `features` and `details` fields, which give the ranker less to separate
+the target from its distractors.
 
 To determine whether the difference reflects fitted components or a harder
 population, we ran the per-component ablation on both sets
-(`eval/generalization_diag.py`, first draw):
+(`eval/generalization_diag.py`, first draw, measured at the 0.83995
+configuration before exact rescoring was added):
 
 | Component removed  | Public delta | Synthetic delta |
 |--------------------|--------------|-----------------|
@@ -478,15 +546,11 @@ catalog, including obscure records with sparse fields. The private 800 are
 generated by the same curated pipeline as the public 200, so they should resemble
 the public population, not ours.
 
-Our most recent change is a useful check on this reading. Turn-1 tail capture was
-found by inspecting one session, not by tuning, and it raised both sets together
-(public 0.83718 to 0.83995, synthetic 0.79056 to 0.79265 on the draw current at
-the time). A fix that exploited something public-specific would not have moved
-the synthetic score.
-
-We therefore report 0.83995 as our public-set result, 0.806 as our central
-estimate on uncurated targets, and 0.793 — the worst of three draws — as a
-conservative floor.
+**All figures in this section predate exact-substring rescoring** and were
+measured at the 0.83995 configuration. The rescorer should transfer at least as
+well as the components measured here, since it depends only on the verbatim
+property that defines the benchmark rather than on any tuned parameter, but we
+have not re-run the sweep and do not claim it.
 """
 
 DRIFT_NOTE = """
@@ -511,13 +575,14 @@ The fixed-template row was measured at our 0.80695 configuration, before later
 retrieval work; it is retained to show the failure mode we were guarding against
 — a 0.147 collapse when the wrapper wording changes.
 
-The invariance is now free. Until turn-1 tail capture was added, the fixed-
-template extractor scored 0.003 higher on the official templates, and we treated
-that as the price of robustness. It read the colon-free turn-1 constraint that
-our structural path was discarding. With that gap closed, the two extractors
-score identically on the official templates (0.83995 both, see the
-`- robust extraction` row above) while only the structural one survives a
+The invariance is free. Until turn-1 tail capture was added, the fixed-template
+extractor scored 0.003 higher on the official templates, and we treated that as
+the price of robustness. It read the colon-free turn-1 constraint that our
+structural path was discarding. With that gap closed, the two extractors score
+identically on the official templates while only the structural one survives a
 rewording. There is no longer a trade to justify.
+
+Measured at the 0.83995 configuration.
 """
 
 PARAPHRASE_NOTE = """
@@ -545,7 +610,10 @@ Two findings.
 **Our score depends substantially on verbatim disclosure.** Exact-match retrieval
 falls from 0.804 to 0.632 when the customer paraphrases — a 21% relative drop.
 This quantifies how much of our result rests on the simulator's design rather
-than on general retrieval capability.
+than on general retrieval capability. Exact-substring rescoring, added after
+these figures were taken, depends on the same property and would be expected to
+contribute nothing under paraphrase — it degrades to a no-op rather than to a
+penalty, since ties break on the original retrieval order.
 
 **Semantic reranking does not recover the loss.** We expected the embedding layer
 to earn its place once the lexical signal degraded. It did not: 0.628 versus
@@ -568,31 +636,32 @@ The submission rules ask for latency to be disclosed. Measured with
 
 | Measure                              | Value    |
 |--------------------------------------|----------|
-| Median per-turn latency              | 11.3 ms  |
-| Mean per-turn latency                | 16.5 ms  |
-| p95 per-turn latency                 | 46.8 ms  |
-| p99 per-turn latency                 | 90.6 ms  |
-| Worst single turn                    | 155.4 ms |
-| Full 200-session run, after startup  | 8.9 s    |
-| FTS5 index build (once per process)  | 32.2 s   |
-| Peak RSS                             | 387.3 MB |
-| ...baseline before agent constructed | 236.1 MB |
+| Median per-turn latency              | 11 ms    |
+| p95 per-turn latency                 | 44 ms    |
+| p99 per-turn latency                 | 84 ms    |
+| Full 200-session run, after startup  | 8.4 s    |
+| FTS5 index build (once per process)  | 32.3 s   |
+| Peak RSS                             | 386.4 MB |
+| ...baseline before agent constructed | 236.3 MB |
 | ...marginal cost of the agent        | ~150 MB  |
 | LLM tokens consumed                  | 0        |
 
 Unlike every other figure in this document, these are wall-clock measurements and
 vary by a millisecond or two between runs. The scores do not: the agent is
 deterministic, so a change in score is always a real effect of a code change.
+These figures were taken before exact-substring rescoring was enabled; that
+component adds a substring scan over 20 candidates per turn, which is small
+relative to the FTS query but not zero.
 
 Two figures deserve qualification rather than a favourable reading.
 
-**The 387 MB peak is not all ours.** 236.1 MB is already resident before the
-agent is constructed — the Python interpreter plus the evaluator's own in-memory
-catalog. The agent's marginal footprint is roughly 150 MB, essentially all of it
-the SQLite FTS5 index over 50,000 products. Note that Python-level allocation
-accounts for only 10.4 MB of that; the index lives in SQLite's C layer, which
-`tracemalloc` cannot see. Reporting the Python figure alone would understate the
-real cost by an order of magnitude.
+**The peak RSS is not all ours.** 236 MB is already resident before the agent is
+constructed — the Python interpreter plus the evaluator's own in-memory catalog.
+The agent's marginal footprint is roughly 150 MB, essentially all of it the
+SQLite FTS5 index over 50,000 products. Python-level allocation accounts for only
+10.4 MB of that; the index lives in SQLite's C layer, which `tracemalloc` cannot
+see. Reporting the Python figure alone would understate the real cost by an order
+of magnitude.
 
 **The 32 s startup is a one-off.** It is index construction, paid once per
 process rather than per session or per turn. Amortised over 200 sessions it is
@@ -610,8 +679,8 @@ retained in `src/` but disabled, for the reasons set out above.
 """
 
 NOTE_BLOCKS = (PROGRESSION, COMPONENT_NOTES,
-               ADJACENCY_NOTE, DUPLICATION_NOTE, TAIL_NOTE, ROTATION_NOTE,
-               TOKENCAP_NOTE, SWEEP_NOTE,
+               RESCORE_NOTE, ADJACENCY_NOTE, DUPLICATION_NOTE, TAIL_NOTE,
+               ROTATION_NOTE, TOKENCAP_NOTE, SWEEP_NOTE,
                IDF_NOTE, CATCONTENT_NOTE, RERANK_NOTE, OVERRIDE_NOTE,
                ENTROPY_NOTE, ORACLE_NOTE, GENERALIZATION_NOTE, DRIFT_NOTE,
                PARAPHRASE_NOTE, PERFORMANCE_NOTE)
