@@ -256,16 +256,5 @@ best partitions the current candidate set attacks that gap directly.
 
 ---
 
-## Team contributions
-
-| Member | Contribution |
-|---|---|
-| Swetha | Protocol analysis, agent implementation, full measurement suite |
-| TBC | TBC |
-| TBC | TBC |
-| TBC | TBC |
-
----
-
 Organizer documentation for the challenge is preserved in `KIT_README.md` and
 `docs/`.
